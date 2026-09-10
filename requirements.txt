@@ -1,3 +1,7 @@
+fpdf==1.7.2
+openpyxl==3.1.2
+Flask
 python-telegram-bot
-pytz==2024.1
-reportlab==4.2.5
+pytz
+Flask-Cors
+cryptography>=44,<47
