@@ -57,6 +57,9 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
 
 from persistent_storage import resolve_storage_root
+from calendar_undo import CalendarUndo
+
+CALENDAR_UNDO = CalendarUndo()
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
 # BASE_DIR remains the data root for tenant helpers and personal-bot modules.
@@ -2440,8 +2443,6 @@ def pay_subscription():
         source_target = member if source_is_group else lesson
         if source_target.get("paid") or source_target.get("free") or has_allocation(source_target) or source_target.get("paid_via_subscription"):
             return jsonify({"status": "error", "message": "Сначала отмените существующую оплату или бесплатный статус занятия."}), 409
-        source_group_name = str(lesson.get("group_name", "") or "")
-        source_series_id = str(lesson.get("series_id", "") or "")
         if price is None or price <= 0:
             return jsonify({"status": "error", "message": "Сначала укажите стоимость этого занятия."}), 400
         if requested_lesson_count is not None:
@@ -2454,42 +2455,23 @@ def pay_subscription():
             if abs(count_exact - lesson_count) > 0.0001:
                 return jsonify({"status": "error", "message": f"Сумма должна делиться на стоимость урока {price:.0f} ₽ без остатка или укажите количество занятий вручную."}), 400
 
-        try:
-            start_dt = datetime.datetime.strptime(f"{date} {lesson.get('time', '00:00')}", "%Y-%m-%d %H:%M")
-        except ValueError:
-            return jsonify({"status": "error", "message": "Некорректная дата или время занятия."}), 400
-
+        # An abonnement follows the same ledger rule as a common payment:
+        # oldest chargeable debt first, across individual and group lessons.
+        # The lesson where the action was opened only identifies the student.
         candidates = []
-        for date_key, lessons in schedule.items():
-            for item in lessons:
-                try:
-                    item_dt = datetime.datetime.strptime(f"{date_key} {item.get('time', '00:00')}", "%Y-%m-%d %H:%M")
-                except ValueError:
-                    continue
-                if item_dt < start_dt:
-                    continue
-                if source_is_group:
-                    if item.get("lesson_type") != "group" or item.get("cancelled"):
-                        continue
-                    if source_series_id:
-                        if str(item.get("series_id", "") or "") != source_series_id:
-                            continue
-                    elif str(item.get("group_name", "") or "") != source_group_name:
-                        continue
-                    for member in item.get("group_members") or []:
-                        if str(member.get("student_id", "")) == student_id and not bool(member.get("paid", False)) and not bool(member.get("free", False)):
-                            candidates.append((item_dt, date_key, item, member))
-                            break
-                else:
-                    if item.get("lesson_type") == "group" or item.get("cancelled"):
-                        continue
-                    if str(item.get("student_id", "")) == student_id and not bool(item.get("paid", False)) and not bool(item.get("free", False)):
-                        candidates.append((item_dt, date_key, item, None))
-        candidates.sort(key=lambda row: row[0])
+        for date_key, item, target in student_payment_lessons(schedule, student_id):
+            if item.get("cancelled") or target.get("paid") or target.get("free") or target.get("paid_via_subscription"):
+                continue
+            try:
+                item_dt = datetime.datetime.strptime(f"{date_key} {item.get('time', '00:00')}", "%Y-%m-%d %H:%M")
+            except (TypeError, ValueError):
+                continue
+            candidates.append((item_dt, date_key, item, target if item.get("lesson_type") == "group" else None))
+        candidates.sort(key=lambda row: (row[0], str(row[2].get("id", ""))))
         if any(has_allocation(member if member is not None else item) for _dt, _date, item, member in candidates[:lesson_count]):
             return jsonify({"status": "error", "message": "В выбранных занятиях есть распределение общей суммы. Сначала отмените его в карточке ученика."}), 409
         if len(candidates) < lesson_count:
-            return jsonify({"status": "error", "message": f"В расписании впереди только {len(candidates)} неоплаченных занятий. Для суммы {amount:.0f} ₽ нужно {lesson_count}."}), 400
+            return jsonify({"status": "error", "message": f"В расписании только {len(candidates)} неоплаченных занятий. Для суммы {amount:.0f} ₽ нужно {lesson_count}."}), 400
 
         settings = load_settings()
         now = receipt_now()
@@ -3083,17 +3065,15 @@ def reverse_student_payment():
     return jsonify({"status": "ok"})
 
 
-def student_payment_candidates(schedule, students, student_id, future_only=False):
+def student_payment_candidates(schedule, students, student_id):
+    """One chronological queue for custom amounts and 4/8-lesson payments, including debt."""
     candidates = []
-    now = receipt_now().replace(tzinfo=None)
     for date_key, lesson, target in student_payment_lessons(schedule, student_id):
         if lesson.get("cancelled") or target.get("free") or target.get("paid") or target.get("paid_via_subscription"):
             continue
         try:
             dt = datetime.datetime.strptime(f"{date_key} {lesson.get('time', '00:00')}", "%Y-%m-%d %H:%M")
         except (TypeError, ValueError):
-            continue
-        if future_only and dt < now:
             continue
         member = target if lesson.get("lesson_type") == "group" else None
         price = member_lesson_price(students, member, lesson) if member is not None else get_student_price(students, student_id, lesson.get("price"))
@@ -3131,7 +3111,7 @@ def get_student_payment_options():
         students = load_json(STUDENTS_FILE)
         if student_id not in students:
             return jsonify({"status": "error", "message": "Ученик не найден."}), 404
-        candidates = student_payment_candidates(load_json(DATA_FILE), students, student_id, future_only=True)
+        candidates = student_payment_candidates(load_json(DATA_FILE), students, student_id)
         options = [quote for count in (4, 8) if (quote := student_payment_quote(candidates, student_id, count))]
     return jsonify({"status": "ok", "options": options, "available_lessons": len(candidates)})
 
@@ -3198,7 +3178,7 @@ def apply_student_payment():
                                 **student_lesson_stats(student_id)})
         transaction_id = f"payment_{time.time_ns()}"
         allocations = []
-        candidates = student_payment_candidates(schedule, students, student_id, future_only=quick_count is not None)
+        candidates = student_payment_candidates(schedule, students, student_id)
         if quick_count is not None:
             quote = student_payment_quote(candidates, student_id, quick_count)
             if not quote or quote["preview_token"] != data.get("preview_token") or abs(amount - quote["amount"]) > 0.001:
@@ -3324,6 +3304,7 @@ def move_lesson():
 
     with DATA_LOCK:
         schedule = load_json(DATA_FILE)
+        before = copy.deepcopy(schedule)
         if old_date not in schedule:
             return jsonify({"status": "error", "message": "Исходная дата не найдена."}), 404
 
@@ -3380,7 +3361,8 @@ def move_lesson():
             schedule.setdefault(new_date, []).append(target_lesson)
 
         save_json(DATA_FILE, schedule)
-    return jsonify({"status": "ok"})
+        undo_token = CALENDAR_UNDO.remember(current_teacher_id(), before, schedule)
+    return jsonify({"status": "ok", "undo_token": undo_token})
 
 
 @flask_app.route("/api/delete_lesson", methods=["POST"])
@@ -3392,6 +3374,7 @@ def delete_lesson():
 
     with DATA_LOCK:
         schedule = load_json(DATA_FILE)
+        before = copy.deepcopy(schedule)
         if date not in schedule or not lesson_id:
             return jsonify({"status": "error", "message": "Занятие не найдено."}), 404
 
@@ -3422,6 +3405,24 @@ def delete_lesson():
                 del schedule[date]
 
         save_json(DATA_FILE, schedule)
+        undo_token = CALENDAR_UNDO.remember(current_teacher_id(), before, schedule)
+    return jsonify({"status": "ok", "undo_token": undo_token})
+
+
+@flask_app.route("/api/undo_calendar_action", methods=["POST"])
+def undo_calendar_action():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "code": "invalid_request"}), 400
+    token = data.get("undo_token")
+    owner = current_teacher_id()
+    with DATA_LOCK:
+        try:
+            restored = CALENDAR_UNDO.prepare(owner, token, load_json(DATA_FILE))
+        except ValueError as error:
+            return jsonify({"status": "error", "code": str(error)}), 409
+        save_json(DATA_FILE, restored)
+        CALENDAR_UNDO.consume(owner, token)
     return jsonify({"status": "ok"})
 
 
