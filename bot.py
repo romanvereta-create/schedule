@@ -40,6 +40,7 @@ import threading
 import time
 import shutil
 from contextlib import contextmanager
+from functools import wraps
 from urllib.parse import parse_qsl
 
 if os.name == "nt":
@@ -147,6 +148,15 @@ class DataCorruptionError(RuntimeError):
 
 DATA_LOCK = InterProcessRLock(project_path(".schedule_data.lock"))
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def serialized_data(function):
+    """Hold the shared lock across an entire read/modify/write operation."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with DATA_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 def _load_json_raw(filename, default=None):
@@ -780,6 +790,7 @@ def generate_receipt_pdf(settings, client_name, amount, lesson_id, receipt_numbe
     return path, receipt_number, now
 
 
+@serialized_data
 def init_book():
     book_file = current_book_file()
     if os.path.exists(book_file):
@@ -800,7 +811,14 @@ def init_book():
         ws.column_dimensions["D"].width = 20
         ws.column_dimensions["E"].width = 15
         ws.column_dimensions["F"].width = 12
-        wb.save(book_file)
+        fd, temporary = tempfile.mkstemp(prefix="book_", suffix=".xlsx", dir=os.path.dirname(book_file))
+        os.close(fd)
+        try:
+            wb.save(temporary)
+            os.replace(temporary, book_file)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
     finally:
         wb.close()
 
@@ -877,10 +895,10 @@ def recover_payment_transaction():
     """Recover a payment interrupted between schedule.json and book.xlsx writes."""
     paths = payment_transaction_paths()
     marker_path = paths["marker"]
-    if not os.path.exists(marker_path):
-        return False
-
     with DATA_LOCK:
+        # Another request may have finished the transaction while we waited.
+        if not os.path.exists(marker_path):
+            return False
         try:
             with open(marker_path, "r", encoding="utf-8") as source:
                 marker = json.load(source)
@@ -1785,6 +1803,13 @@ def get_settings():
 @flask_app.route("/api/update_settings", methods=["POST"])
 def update_settings():
     data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Ожидается объект настроек."}), 400
+    return update_settings_data(data)
+
+
+@serialized_data
+def update_settings_data(data):
     settings = load_settings()
     boolean_keys = {"default_reminders_enabled", "default_student_reminders", "default_send_receipts", "default_send_receipt_copy", "onboarding_completed", "parent_lesson_end"}
     notification_template_keys = {
@@ -1867,19 +1892,33 @@ def upload_receipt_asset():
     if ext not in {".png", ".jpg", ".jpeg"}:
         return jsonify({"status": "error", "message": "Разрешены PNG, JPG и JPEG."}), 400
 
+    return save_receipt_asset(asset_type, ext, raw, mapping[asset_type])
+
+
+@serialized_data
+def save_receipt_asset(asset_type, ext, raw, setting_key):
+    # Request body is already read; a slow upload must not hold the data lock.
     os.makedirs(current_receipt_assets_dir(), exist_ok=True)
     filename = f"{asset_type}{ext}"
     destination = os.path.join(current_receipt_assets_dir(), filename)
+    fd, temporary = tempfile.mkstemp(prefix="asset_", suffix=".tmp", dir=current_receipt_assets_dir())
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+    settings = load_settings()
+    settings[setting_key] = filename
+    save_json(SETTINGS_FILE, settings)
     for old_ext in (".png", ".jpg", ".jpeg"):
         old_path = os.path.join(current_receipt_assets_dir(), f"{asset_type}{old_ext}")
         if old_path != destination and os.path.exists(old_path):
             os.remove(old_path)
-    with open(destination, "wb") as f:
-        f.write(raw)
-
-    settings = load_settings()
-    settings[mapping[asset_type]] = filename
-    save_json(SETTINGS_FILE, settings)
     return jsonify({"status": "ok", "settings": settings, "filename": filename})
 
 
@@ -3531,5 +3570,3 @@ if __name__ == "__main__":
     app = Application.builder().token(TOKEN).post_init(post_init).post_stop(post_stop).build()
     app.add_handler(CommandHandler("start", start))
     app.run_polling()
-
-

@@ -317,7 +317,8 @@ def create(host, now=None, upload=True, force=False):
                  "drive_file_id": remote["id"], **pending["counts"]}
         atomic_write(state_path, json.dumps(state, indent=2).encode())
         pending_path.unlink(missing_ok=True)
-        warnings = []
+        warnings = (["remote_rotation_failed"]
+                    if "remote_rotation_failed" in (remote.get("warnings") or []) else [])
         try:
             if not webhook_configured():
                 rotate_remote(remote["id"])
