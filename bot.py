@@ -469,6 +469,13 @@ def load_settings():
         "corr_account": "",
         "recipient": "",
         "payment_comment": "",
+        "student_binding_template": "",
+        "parent_binding_template": "",
+        "student_reminder_template": "",
+        "parent_lesson_end_template": "",
+        "teacher_delay_template": "",
+        "student_delay_template": "",
+        "parent_delay_template": "",
         "receipt_logo": "logo.png" if os.path.exists(os.path.join(current_receipt_assets_dir(), "logo.png")) else "",
         "receipt_signature": "signature.png" if os.path.exists(os.path.join(current_receipt_assets_dir(), "signature.png")) else "",
         "receipt_qrcode": "qrcode.png" if os.path.exists(os.path.join(current_receipt_assets_dir(), "qrcode.png")) else "",
@@ -1780,12 +1787,20 @@ def update_settings():
     data = request.get_json() or {}
     settings = load_settings()
     boolean_keys = {"default_reminders_enabled", "default_student_reminders", "default_send_receipts", "default_send_receipt_copy", "onboarding_completed", "parent_lesson_end"}
+    notification_template_keys = {
+        "student_binding_template", "parent_binding_template",
+        "student_reminder_template", "parent_lesson_end_template",
+        "teacher_delay_template", "student_delay_template", "parent_delay_template"
+    }
     text_keys = {
         "company_name", "inn", "ogrnip", "address", "phone", "service_name",
         "tax_system", "email_sender", "thanks_text", "website", "bank_name",
         "bik", "account_number", "corr_account", "recipient", "payment_comment", "zoom_link",
         "work_start", "work_end"
-    }
+    } | notification_template_keys
+    if any(key in data and (not isinstance(data[key], str) or len(data[key]) > 1000)
+           for key in notification_template_keys):
+        return jsonify({"status": "error", "message": "Текст сообщения должен быть не длиннее 1000 символов."}), 400
     enum_values = {
         "language": {"ru", "en"},
         "currency": {"RUB", "USD", "EUR", "CNY", "TRY"},
@@ -2170,30 +2185,30 @@ def add_lesson():
             if not student:
                 return jsonify({"status": "error", "message": "Укажите ученика."}), 400
             if not student_id or student_id == "manual":
-                existing_id = None
-                for s_id, s_info in students.items():
-                    name = s_info.get("name") if isinstance(s_info, dict) else s_info
-                    if name == student:
-                        existing_id = s_id
-                        break
+                student_id = f"manual_{time.time_ns()}"
+                students[student_id] = {
+                    **new_student_notification_settings(),
+                    "name": student,
+                    "username": "",
+                    "contacts": {},
+                    "student_contacts": {},
+                    "default_price": 0,
+                    "user_id": student_id,
+                    "color": next_auto_color(students),
+                }
+            elif student_id not in students:
+                return jsonify({"status": "error", "message": "Ученик не найден."}), 404
 
-                if existing_id:
-                    student_id = existing_id
-                else:
-                    student_id = f"manual_{time.time_ns()}"
-                    students[student_id] = {
-                        **new_student_notification_settings(),
-                        "name": student,
-                        "username": "",
-                        "contacts": {},
-                        "student_contacts": {},
-                        "default_price": 0,
-                        "user_id": student_id,
-                        "color": next_auto_color(students),
-                    }
-
-            if student_id in students and isinstance(students[student_id], str):
-                students[student_id] = {"name": students[student_id], "contacts": {}, "student_contacts": {}, "default_price": 0, "color": next_auto_color(students)}
+            if isinstance(students[student_id], str):
+                students[student_id] = {
+                    "name": students[student_id], "contacts": {}, "student_contacts": {},
+                    "default_price": 0, "color": next_auto_color(students),
+                }
+            student_record = students[student_id]
+            if "contacts" in data:
+                student_record["contacts"] = contacts
+            if "student_contacts" in data:
+                student_record["student_contacts"] = student_contacts
             save_json(STUDENTS_FILE, students)
 
         schedule = load_json(DATA_FILE)
@@ -2232,7 +2247,7 @@ def add_lesson():
 
         save_json(DATA_FILE, schedule)
 
-    return jsonify({"status": "ok", "students": students})
+    return jsonify({"status": "ok", "students": students, "student_id": student_id if entry_type == "lesson" and lesson_type == "student" else ""})
 
 
 def lesson_price_can_change(date_key, lesson, target, not_before):
@@ -3510,6 +3525,11 @@ if __name__ == "__main__":
     os.makedirs(RECEIPTS_DIR, exist_ok=True)
     init_book()
 
+    from automatic_backup import start_worker as start_backup_worker
+    start_backup_worker(sys.modules[__name__])
+
     app = Application.builder().token(TOKEN).post_init(post_init).post_stop(post_stop).build()
     app.add_handler(CommandHandler("start", start))
     app.run_polling()
+
+
