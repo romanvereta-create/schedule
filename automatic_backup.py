@@ -21,6 +21,8 @@ from verify_live_storage import inspect_storage
 REQUIRED_ENV = ("TEMLI_GOOGLE_CLIENT_ID", "TEMLI_GOOGLE_CLIENT_SECRET",
                 "TEMLI_GOOGLE_REFRESH_TOKEN", "TEMLI_GOOGLE_FOLDER_ID",
                 "TEMLI_BACKUP_ENCRYPTION_KEY")
+WEBHOOK_ENV = ("TEMLI_BACKUP_WEBHOOK_URL", "TEMLI_BACKUP_WEBHOOK_SECRET",
+               "TEMLI_BACKUP_ENCRYPTION_KEY")
 PREFIX = "temli-backup-"
 NAME = re.compile(r"temli-backup-\d{8}-\d{6}(?:-[a-f0-9]{8})?\.tar\.gz\.enc")
 FIELDS = "id,name,size,md5Checksum,parents,appProperties,trashed"
@@ -29,7 +31,14 @@ _THREAD_LOCK = threading.Lock()
 
 def configured(environ=None):
     values = os.environ if environ is None else environ
-    return all(values.get(name, "").strip() for name in REQUIRED_ENV)
+    oauth = all(values.get(name, "").strip() for name in REQUIRED_ENV)
+    webhook = all(values.get(name, "").strip() for name in WEBHOOK_ENV)
+    return oauth or webhook
+
+
+def webhook_configured(environ=None):
+    values = os.environ if environ is None else environ
+    return all(values.get(name, "").strip() for name in WEBHOOK_ENV)
 
 
 def _env(name):
@@ -180,7 +189,36 @@ def remote_files(token):
             return result
 
 
+def _upload_webhook(path):
+    url = _env("TEMLI_BACKUP_WEBHOOK_URL")
+    if not url.startswith("https://script.google.com/macros/s/") or not url.endswith("/exec"):
+        raise RuntimeError("invalid_backup_webhook_url")
+    content = path.read_bytes()
+    checksum = hashlib.sha256(content).hexdigest()
+    payload = json.dumps({
+        "secret": _env("TEMLI_BACKUP_WEBHOOK_SECRET"), "name": path.name,
+        "sha256": checksum,
+        "content_base64": __import__("base64").b64encode(content).decode("ascii"),
+    }).encode()
+    try:
+        request = urllib.request.Request(url, data=payload, headers={
+            "Content-Type": "application/json", "User-Agent": "TEMLI-backup/1",
+        })
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.loads(response.read())
+    except (OSError, ValueError, urllib.error.HTTPError) as error:
+        raise RuntimeError("backup_webhook_delivery_failed_" + type(error).__name__) from None
+    if (result.get("status") != "ok" or result.get("name") != path.name
+            or str(result.get("size")) != str(len(content))
+            or result.get("sha256") != checksum
+            or not isinstance(result.get("id"), str)):
+        raise RuntimeError("backup_webhook_verification_failed")
+    return result
+
+
 def _upload(path):
+    if webhook_configured():
+        return _upload_webhook(path)
     token = _token()
     content = path.read_bytes()
     # A previous upload may have completed before the connection failed.
@@ -232,7 +270,7 @@ def local_directory(host):
     return output
 
 
-def create(host, now=None, upload=True):
+def create(host, now=None, upload=True, force=False):
     now = now or datetime.datetime.now(__import__("pytz").timezone(
         getattr(host, "TIMEZONE_NAME", "Europe/Moscow")))
     output = local_directory(host)
@@ -240,7 +278,8 @@ def create(host, now=None, upload=True):
     with backup_lock(output):
         state_path = output / "last-success.json"
         state = read_json(state_path)
-        if upload and state.get("date") == now.date().isoformat() and state.get("drive_file_id"):
+        if (upload and not force and state.get("date") == now.date().isoformat()
+                and state.get("drive_file_id")):
             return dict(state, status="already_done")
         pending_path = output / "pending.json"
         pending = read_json(pending_path)
@@ -280,7 +319,8 @@ def create(host, now=None, upload=True):
         pending_path.unlink(missing_ok=True)
         warnings = []
         try:
-            rotate_remote(remote["id"])
+            if not webhook_configured():
+                rotate_remote(remote["id"])
             files = sorted((f for f in output.iterdir() if NAME.fullmatch(f.name)
                             and f.is_file() and not f.is_symlink()), key=lambda f: f.name, reverse=True)
             keep = {final}
@@ -357,7 +397,8 @@ def start_worker(host):
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("create")
+    create_cmd = sub.add_parser("create")
+    create_cmd.add_argument("--force", action="store_true")
     sub.add_parser("status")
     cmd = sub.add_parser("restore")
     cmd.add_argument("archive")
@@ -369,7 +410,7 @@ def main():
             result = restore(args.archive, args.destination, args.confirm)
         else:
             import bot
-            result = create(bot) if args.command == "create" else status(bot)
+            result = create(bot, force=args.force) if args.command == "create" else status(bot)
         print(json.dumps(result, ensure_ascii=True, indent=2))
     except Exception as error:
         print(json.dumps({"status": "error", "error_type": type(error).__name__}))
