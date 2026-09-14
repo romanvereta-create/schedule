@@ -3545,28 +3545,5 @@ from personal_bots import register_routes as register_personal_bot_routes
 register_personal_bot_routes(sys.modules[__name__])
 
 if __name__ == "__main__":
-    if not TOKEN:
-        raise RuntimeError("Не задана переменная окружения SCHEDULE_BOT_TOKEN")
-
-    print(f"TEMLI storage: {BASE_DIR}", flush=True)
-
-    threading.Thread(
-        target=lambda: flask_app.run(
-            host="0.0.0.0",
-            port=int(os.getenv("PORT", 8080)),
-            debug=False,
-            use_reloader=False,
-        ),
-        daemon=True,
-    ).start()
-
-    os.makedirs(RECEIPT_ASSETS_DIR, exist_ok=True)
-    os.makedirs(RECEIPTS_DIR, exist_ok=True)
-    init_book()
-
-    from automatic_backup import start_worker as start_backup_worker
-    start_backup_worker(sys.modules[__name__])
-
-    app = Application.builder().token(TOKEN).post_init(post_init).post_stop(post_stop).build()
-    app.add_handler(CommandHandler("start", start))
-    app.run_polling()
+    from production_server import run
+    run(sys.modules[__name__])
