@@ -362,33 +362,58 @@ def restore(encrypted, destination, confirm):
 
 
 def status(host):
+    import backup_alerts
     output = local_directory(host)
     return {"configured": configured(), "last_success": read_json(output / "last-success.json"),
             "pending_upload": bool(read_json(output / "pending.json")),
-            "last_attempt": read_json(output / "last-attempt.json")}
+            "last_attempt": read_json(output / "last-attempt.json"),
+            "owner_alerts_configured": backup_alerts.configured(host),
+            "owner_alert": read_json(output / "owner-alert.json")}
+
+
+def run_check(host):
+    """One worker iteration; failures of alerts must not stop future backups."""
+    import backup_alerts
+    try:
+        if not configured():
+            raise RuntimeError("backup_configuration_incomplete")
+        result = create(host)
+        outcome = "warning" if result.get("warnings") else result["status"]
+        attempt = {"status": result["status"], "warnings": result.get("warnings", [])}
+    except BlockingIOError:
+        outcome = "busy"
+        attempt = {"status": "busy", "warnings": []}
+    except Exception as error:
+        outcome = "failed"
+        attempt = {"status": "failed", "error_type": type(error).__name__}
+    attempt["at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        output = local_directory(host)
+        try:
+            atomic_write(output / "last-attempt.json", json.dumps(attempt).encode())
+        except OSError:
+            print("TEMLI backup status persistence unavailable", flush=True)
+        backup_alerts.notify(host, output, outcome)
+    except Exception:
+        # Local directory/notification failures cannot kill the worker.
+        print("TEMLI backup status/alert unavailable", flush=True)
+        try:
+            backup_alerts.notify(host, Path(host.BASE_DIR).parent / ".temli-alert-fallback", "failed")
+        except Exception:
+            pass
+    if outcome not in ("already_done", "busy"):
+        print("TEMLI automatic backup: " + outcome, flush=True)
+    return attempt
 
 
 def start_worker(host):
-    if not configured():
+    import backup_alerts
+    if not configured() and not backup_alerts.configured(host):
         print("TEMLI automatic backup: disabled (environment is incomplete)", flush=True)
         return None
     def work():
         while True:
-            try:
-                result = create(host)
-                if result["status"] != "already_done":
-                    print("TEMLI automatic backup: " + result["status"] + " " + result["archive"], flush=True)
-                atomic_write(local_directory(host) / "last-attempt.json", json.dumps({
-                    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "status": result["status"], "warnings": result.get("warnings", [])}).encode())
-            except Exception as error:
-                print("TEMLI automatic backup: failed " + type(error).__name__, flush=True)
-                try:
-                    atomic_write(local_directory(host) / "last-attempt.json", json.dumps({
-                        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        "status": "failed", "error_type": type(error).__name__}).encode())
-                except Exception:
-                    pass
+            run_check(host)
             time.sleep(900)
     thread = threading.Thread(target=work, name="temli-backup-worker", daemon=True)
     thread.start()
@@ -401,6 +426,7 @@ def main():
     create_cmd = sub.add_parser("create")
     create_cmd.add_argument("--force", action="store_true")
     sub.add_parser("status")
+    sub.add_parser("test-alert")
     cmd = sub.add_parser("restore")
     cmd.add_argument("archive")
     cmd.add_argument("--destination", required=True)
@@ -411,7 +437,13 @@ def main():
             result = restore(args.archive, args.destination, args.confirm)
         else:
             import bot
-            result = create(bot, force=args.force) if args.command == "create" else status(bot)
+            if args.command == "test-alert":
+                from backup_alerts import send_owner
+                if not send_owner(bot, "TEMLI: проверка уведомлений о резервных копиях. Всё подключено."):
+                    raise RuntimeError("owner_alert_delivery_failed")
+                result = {"status": "ok", "owner_alert": "sent"}
+            else:
+                result = create(bot, force=args.force) if args.command == "create" else status(bot)
         print(json.dumps(result, ensure_ascii=True, indent=2))
     except Exception as error:
         print(json.dumps({"status": "error", "error_type": type(error).__name__}))
