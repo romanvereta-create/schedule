@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from flask import jsonify, request
 import personal_bots as bots
+import invitation_channels as channels
 
 
 def register_invite_routes(host, read_registry, registry_path, identity):
@@ -23,16 +24,62 @@ def register_invite_routes(host, read_registry, registry_path, identity):
         return value
 
     def connection(teacher):
-        record = read_registry().get(teacher)
+        record = channels.preferred(host, read_registry().get(teacher))
         if not record:
             raise bots.ConnectionError("bot_required")
         return record
+
+    def render_message_template(value, fallback, replacements):
+        text = str(value or fallback).strip()
+        for key, replacement in replacements.items():
+            text = text.replace("{" + key + "}", str(replacement or ""))
+        return text
+
+    def sync_active_binding_contacts(students, bindings):
+        """Backfill a missing Telegram contact from a teacher-approved binding."""
+        changed = False
+        for binding in bindings:
+            if binding.get("state") != "active":
+                continue
+            student_id = str(binding.get("student_id", ""))
+            if student_id not in students:
+                continue
+            role = binding.get("role")
+            field = "student_contacts" if role == "student" else "contacts" if role == "parent" else ""
+            if not field:
+                continue
+            student = students[student_id]
+            if isinstance(student, str):
+                student = {"name": student, "user_id": student_id, "contacts": {}, "student_contacts": {}}
+                students[student_id] = student
+                changed = True
+            if not isinstance(student, dict):
+                continue
+            contacts = student.get(field)
+            if not isinstance(contacts, dict):
+                contacts = {}
+            if str(contacts.get("tg", "") or "").strip():
+                continue
+            username = str(binding.get("username", "") or "").strip().lstrip("@")
+            telegram_id = str(binding.get("telegram_id", "") or "").strip()
+            contact = "@" + username if re.fullmatch(r"[A-Za-z0-9_]{1,64}", username) else telegram_id if telegram_id.isdigit() else ""
+            if not contact:
+                continue
+            contacts = dict(contacts)
+            contacts["tg"] = contact
+            student[field] = contacts
+            changed = True
+        return changed
 
     def activate(teacher):
         # Serialization also covers concurrent first-invite activation/disconnect.
         with host.DATA_LOCK:
             records = read_registry()
             record = connection(teacher)
+            if record.get('channel') == 'main':
+                if not record.get('username'):
+                    raise bots.ConnectionError('bot_unavailable')
+                return record
             token = bots.cipher().decrypt(record["token"].encode()).decode()
             base = os.getenv("TEMLI_PUBLIC_URL", "https://bot-1787954043-4984-solo1986.bothost.tech").rstrip("/")
             parsed = urlsplit(base)
@@ -70,16 +117,39 @@ def register_invite_routes(host, read_registry, registry_path, identity):
             action = data.get("action", "list")
             with host.teacher_scope(teacher), host.DATA_LOCK:
                 students = host.load_json(host.STUDENTS_FILE)
-                if student_id not in students:
-                    raise bots.ConnectionError("student_missing")
                 record = read_registry().get(teacher)
                 links = read_links()
+                available = channels.records(host, record)
+                invite_bot = channels.preferred(host, record)
+                if action == 'availability':
+                    return jsonify(status='ok', bot_username=(invite_bot or {}).get('username'))
+                if action == "pending_summary":
+                    pending = {}
+                    active_bindings = []
+                    for binding in links["bindings"].values():
+                        sid = str(binding.get("student_id", ""))
+                        if not (binding.get("connection_id") in available and sid in students):
+                            continue
+                        if binding.get("state") == "active":
+                            active_bindings.append(binding)
+                        elif binding.get("state") == "pending" and binding.get("role") in ("student", "parent"):
+                            pending.setdefault(sid, set()).add(binding["role"])
+                    contacts_updated = sync_active_binding_contacts(students, active_bindings)
+                    if contacts_updated:
+                        host.save_json(host.STUDENTS_FILE, students)
+                    return jsonify(status="ok", count=sum(len(roles) for roles in pending.values()),
+                                   pending=[{"student_id": sid, "roles": sorted(roles)}
+                                            for sid, roles in pending.items()],
+                                   contacts_updated=contacts_updated)
+                if student_id not in students:
+                    raise bots.ConnectionError("student_missing")
                 if action == "list":
-                    active = record.get("connection_id") if record else None
                     bindings = [{**b, "id": key} for key, b in links["bindings"].items()
-                                if b["student_id"] == student_id and active and b["connection_id"] == active and b.get('state') != 'replaced']
-                    return jsonify(status="ok", bot_username=(record or {}).get("username"),
-                                   bindings=bindings)
+                                if b["student_id"] == student_id and b["connection_id"] in available and b.get('state') != 'replaced']
+                    if sync_active_binding_contacts(students, bindings):
+                        host.save_json(host.STUDENTS_FILE, students)
+                    return jsonify(status="ok", bot_username=(invite_bot or {}).get("username"),
+                                   bindings=bindings, student=students[student_id])
                 if action == "create":
                     role = data.get("role")
                     if role not in ("student", "parent"):
@@ -91,6 +161,8 @@ def register_invite_routes(host, read_registry, registry_path, identity):
                                         if v["expires_at"] > now and
                                         not (v["student_id"] == student_id and v["role"] == role)}
                     raw = secrets.token_urlsafe(24)
+                    if record.get('channel') == 'main':
+                        raw = 'join_' + teacher + '_' + raw
                     digest = hashlib.sha256(raw.encode()).hexdigest()
                     links["invites"][digest] = {"student_id": student_id, "role": role,
                         "connection_id": record["connection_id"], "expires_at": now + 48 * 3600}
@@ -99,21 +171,37 @@ def register_invite_routes(host, read_registry, registry_path, identity):
                                    expires_at=now + 48 * 3600)
                 if action not in ("approve", "revoke"):
                     raise bots.ConnectionError("invalid_request")
-                record = connection(teacher)
                 key = str(data.get("binding_id", ""))
                 binding = links["bindings"].get(key)
-                if not binding or binding["student_id"] != student_id or binding["connection_id"] != record.get("connection_id"):
+                if not binding or binding["student_id"] != student_id or binding["connection_id"] not in available:
                     raise bots.ConnectionError("binding_missing")
+                newly_active = action == 'approve' and binding.get('state') != 'active'
                 if action == "approve":
                     if binding['role'] == 'student':
                         for other in links['bindings'].values():
                             if other is not binding and other.get('student_id') == student_id and other.get('role') == 'student':
                                 other['state'] = 'replaced'
                     binding["state"] = "active"
+                    if sync_active_binding_contacts(students, [binding]):
+                        host.save_json(host.STUDENTS_FILE, students)
                 else:
                     del links["bindings"][key]
                 host._save_json_raw(links_path(), links)
-                return jsonify(status="ok")
+                channel = available[binding['connection_id']]
+                confirmation = None
+                if newly_active and channel.get('channel') == 'main':
+                    english = host.load_settings().get('language') == 'en'
+                    confirmation = channels.message(host, channel,
+                        'Connection confirmed 😊 Lesson updates will arrive here.' if english else
+                        'Подключение подтверждено 😊 Теперь сообщения о занятиях будут приходить сюда.')
+            # Persist before best-effort sending, without holding the global data lock.
+            if confirmation:
+                try:
+                    bots.telegram_info(channels.token_for(host, channel), 'sendMessage', {
+                        'chat_id': binding['chat_id'], 'text': confirmation})
+                except bots.ConnectionError:
+                    pass
+            return jsonify(status="ok", student=students[student_id])
         except bots.ConnectionError as error:
             return jsonify(status="error", code=str(error)), (401 if str(error) == "unauthorized" else 400)
         except Exception:
@@ -172,8 +260,18 @@ def register_invite_routes(host, read_registry, registry_path, identity):
                                 "connection_id": record["connection_id"], "telegram_id": str(sender["id"]),
                                 "chat_id": str(chat["id"]), "name": str(sender.get("first_name", ""))[:128],
                                 "username": str(sender.get("username", ""))[:64], "state": "pending"}
-                        reply = ("Your request has been received. Your teacher will confirm the connection." if english
-                                 else "Заявка получена. Преподаватель подтвердит привязку в карточке ученика.")
+                        settings = host.load_settings()
+                        if invite["role"] == "parent":
+                            fallback = ("Hello! Thank you for connecting 😊 I’ll confirm everything soon, and my lesson updates will arrive here." if english
+                                        else "Здравствуйте! Спасибо, что подключились 😊 Скоро я всё подтвержу, и сюда будут приходить мои сообщения о занятиях.")
+                            template = settings.get("parent_binding_template")
+                        else:
+                            fallback = ("Hi! We’re connected 😊 I’ll confirm everything soon, and my lesson reminders will arrive here." if english
+                                        else "Привет! Мы на связи 😊 Скоро я всё подтвержу, и сюда будут приходить мои напоминания о занятиях.")
+                            template = settings.get("student_binding_template")
+                        reply = render_message_template(template, fallback, {
+                            "name": str(sender.get("first_name", "") or "")[:128]
+                        })
                     links["updates"][update_key] = int(time.time())
                     links["updates"] = dict(list(links["updates"].items())[-2000:])
                     host._save_json_raw(links_path(), links)

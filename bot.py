@@ -251,6 +251,7 @@ def ensure_teacher_registered(teacher_id, user=None):
     with DATA_LOCK:
         registry = load_tenant_registry()
         primary = registry.get("primary_teacher_id", "")
+        had_primary = bool(primary)
         if not primary:
             # Если SCHEDULE_OWNER_ID задан, старые корневые данные закрепляются за ним.
             # При существующих legacy-данных запрещаем назначать владельцем случайного
@@ -265,6 +266,7 @@ def ensure_teacher_registered(teacher_id, user=None):
 
         teachers = registry.setdefault("teachers", {})
         info = teachers.get(teacher_id, {}) if isinstance(teachers.get(teacher_id), dict) else {}
+        previous_info = dict(info)
         if isinstance(user, dict):
             info.update({
                 "id": teacher_id,
@@ -274,9 +276,20 @@ def ensure_teacher_registered(teacher_id, user=None):
             })
         else:
             info.setdefault("id", teacher_id)
-        info["last_seen_at"] = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        now = datetime.datetime.utcnow().replace(microsecond=0)
+        try:
+            seen = datetime.datetime.fromisoformat(str(previous_info.get('last_seen_at', '')).removesuffix('Z'))
+            recently_seen = 0 <= (now - seen).total_seconds() < 60
+        except (ValueError, TypeError):
+            recently_seen = False
+        # Opening the calendar issues several API reads. Do not fsync the global
+        # registry on each one when neither identity nor minute-level activity changed.
+        unchanged = had_primary and info == previous_info and recently_seen
+        if not unchanged:
+            info['last_seen_at'] = now.isoformat() + 'Z'
         teachers[teacher_id] = info
-        save_tenant_registry(registry)
+        if not unchanged:
+            save_tenant_registry(registry)
 
         if teacher_id != primary:
             os.makedirs(os.path.join(TENANT_DATA_DIR, _safe_teacher_id(teacher_id)), exist_ok=True)
@@ -1086,6 +1099,9 @@ def protect_api():
         teacher_id = str((user or {}).get("id", "")).strip()
     if not teacher_id:
         return jsonify({"status": "error", "message": "Не удалось определить преподавателя Telegram."}), 401
+    from invitation_channels import recipient_only
+    if recipient_only(sys.modules[__name__], teacher_id):
+        return jsonify(status='error', code='recipient_only'), 403
     ensure_teacher_registered(teacher_id, user or {})
     TEACHER_CONTEXT.set(teacher_id)
     g.teacher_id = teacher_id
@@ -1977,6 +1993,8 @@ def update_student_profile():
         student["zoom_link"] = zoom_link
         student["contacts"] = contacts
         student["student_contacts"] = student_contacts
+        if 'parent_name' in data:
+            student['parent_name'] = str(data['parent_name'] or '').strip()[:128]
         save_json(STUDENTS_FILE, students)
     return jsonify({"status": "ok", "student": student})
 
@@ -2244,6 +2262,8 @@ def add_lesson():
                     "default_price": 0, "color": next_auto_color(students),
                 }
             student_record = students[student_id]
+            if 'parent_name' in data:
+                student_record['parent_name'] = str(data['parent_name'] or '').strip()[:128]
             if "contacts" in data:
                 student_record["contacts"] = contacts
             if "student_contacts" in data:
@@ -3520,8 +3540,18 @@ async def post_stop(application: Application):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    # Тестовый многопользовательский режим: каждый пользователь этого бота — преподаватель.
-    # Ученики и родители на этом этапе создаются преподавателями вручную в Mini App.
+    from invitation_channels import accept_main, recipient_only
+    raw = context.args[0] if context.args else ''
+    if raw.startswith('join_'):
+        reply = await asyncio.to_thread(accept_main, sys.modules[__name__], raw, u.to_dict(),
+                                        update.effective_chat.to_dict(), update.update_id)
+        if reply:
+            await update.message.reply_text(reply)
+        return
+    if recipient_only(sys.modules[__name__], str(u.id)):
+        await update.message.reply_text('Здесь будут сообщения о занятиях. Для подключения к другому преподавателю откройте его приглашение.')
+        return
+    # Ordinary entry registers a teacher; invitation visitors were handled above.
     ensure_teacher_registered(str(u.id), {
         "id": str(u.id),
         "first_name": u.first_name or "",

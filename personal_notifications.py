@@ -5,9 +5,18 @@ import re
 import hashlib
 from flask import request, jsonify
 import personal_bots as bots
+import invitation_channels as channels
+
+
+def render_template(value, fallback, replacements):
+    text = str(value or fallback).strip()
+    for key, replacement in replacements.items():
+        text = text.replace("{" + key + "}", str(replacement or ""))
+    return text
+
 
 def send_scheduled_notifications(host, now, kinds=('reminder', 'end')):
-    # Each teacher is isolated, including failures. No fallback to the hub bot.
+    # Each teacher is isolated; delivery uses the recipient's original channel.
     for teacher in host.registered_teacher_ids(include_legacy=True):
         try:
             _send_teacher_notifications(host, str(teacher), now, kinds)
@@ -25,7 +34,8 @@ def _send_teacher_notifications(host, teacher, now, kinds):
         with host.DATA_LOCK:
             host.recover_payment_transaction()
             record = host._load_json_raw(os.path.join(host.BASE_DIR, 'personal_bots.json'), {}).get(teacher)
-            if not record or not record.get('connection_id'):
+            available = channels.records(host, record)
+            if not available:
                 return
             settings = host.load_settings()
             students = host.load_json(host.STUDENTS_FILE)
@@ -64,29 +74,38 @@ def _send_teacher_notifications(host, teacher, now, kinds):
                             if kind == 'reminder' and now >= end:
                                 continue
                             role = 'parent' if kind == 'end' else 'student'
-                            recipients = [b for b in links.get('bindings', {}).values() if b.get('student_id') == sid and b.get('role') == role and b.get('state') == 'active' and b.get('connection_id') == record['connection_id']]
+                            recipients = [b for b in links.get('bindings', {}).values() if b.get('student_id') == sid and b.get('role') == role and b.get('state') == 'active' and b.get('connection_id') in available]
                             if role == 'student' and len(recipients) != 1:
                                 continue
                             english = settings.get('language') == 'en'
                             if kind == 'end':
-                                text = (f'Hello! Today’s lesson was held from {start:%H:%M} to {end:%H:%M}.' if english
-                                        else f'Приветствую! Сегодня было проведено занятие с {start:%H:%M} до {end:%H:%M}.')
+                                fallback = ('Hello! Today’s lesson was held from {start} to {end}.' if english
+                                            else 'Приветствую! Сегодня было проведено занятие с {start} до {end}.')
+                                text = render_template(settings.get('parent_lesson_end_template'), fallback, {
+                                    'start': start.strftime('%H:%M'), 'end': end.strftime('%H:%M')
+                                })
                             else:
-                                text = f'Reminder: lesson at {start:%H:%M}.' if english else f'Напоминание: занятие в {start:%H:%M}.'
+                                fallback = 'Reminder: lesson at {time}.' if english else 'Напоминание: занятие в {time}.'
+                                template = str(settings.get('student_reminder_template') or '')
                                 link = info.get('zoom_link') or lesson.get('zoom_link') or settings.get('zoom_link')
-                                if link:
+                                has_link_placeholder = '{link}' in template
+                                text = render_template(template, fallback, {
+                                    'time': start.strftime('%H:%M'), 'link': link or ''
+                                })
+                                if link and not has_link_placeholder:
                                     text += '\n' + str(link)
                             for recipient in recipients:
-                                key = kind + '-' + hashlib.sha256(f"{record['connection_id']}:{date}:{lesson.get('id')}:{start.isoformat()}:{sid}:{recipient['chat_id']}".encode()).hexdigest()
+                                key = kind + '-' + hashlib.sha256(f"{recipient['connection_id']}:{date}:{lesson.get('id')}:{start.isoformat()}:{sid}:{recipient['chat_id']}".encode()).hexdigest()
                                 if key not in log:
                                     log[key] = 'unknown'
-                                    jobs.append((key, recipient['chat_id'], text))
+                                    channel = available[recipient['connection_id']]
+                                    jobs.append((key, recipient['chat_id'], channels.message(host, channel, text), channel))
             if not jobs:
                 return
-            token = bots.cipher().decrypt(record['token'].encode()).decode()
             host._save_json_raw(path, log)
-        for key, chat, text in jobs:
+        for key, chat, text, channel in jobs:
             try:
+                token = channels.token_for(host, channel)
                 bots.telegram_info(token, 'sendMessage', {'chat_id':chat, 'text':text})
             except bots.ConnectionError:
                 continue
@@ -113,7 +132,8 @@ def register_routes(host, registry, identity):
                 raise bots.ConnectionError('invalid_request')
             with host.teacher_scope(teacher), host.DATA_LOCK:
                 record = registry().get(teacher)
-                if not record:
+                available = channels.records(host, record)
+                if not available:
                     raise bots.ConnectionError('bot_required')
                 lessons = host.load_json(host.DATA_FILE).get(str(data.get('date', '')), [])
                 lesson = next((x for x in lessons if str(x.get('id')) == str(data.get('lesson_id'))), None)
@@ -124,12 +144,13 @@ def register_routes(host, registry, identity):
                 if student not in members:
                     raise bots.ConnectionError('student_missing')
                 links = host._load_json_raw(os.path.join(host.tenant_root(), 'personal_bot_links.json'), {})
-                matches = [b for b in links.get('bindings', {}).values() if b.get('student_id') == student and b.get('role') == role and b.get('state') == 'active' and b.get('connection_id') == record.get('connection_id')]
+                matches = [b for b in links.get('bindings', {}).values() if b.get('student_id') == student and b.get('role') == role and b.get('state') == 'active' and b.get('connection_id') in available]
                 if not matches:
                     raise bots.ConnectionError('recipient_missing')
                 if len(matches) != 1:
                     raise bots.ConnectionError('recipient_ambiguous')
-                english = host.load_settings().get('language') == 'en'
+                settings = host.load_settings()
+                english = settings.get('language') == 'en'
                 if action == 'teacher_delay':
                     start = datetime.datetime.strptime(str(data['date']) + ' ' + lesson['time'], '%Y-%m-%d %H:%M')
                     new_time = (start + datetime.timedelta(minutes=minutes)).strftime('%H:%M')
@@ -138,11 +159,14 @@ def register_routes(host, registry, identity):
                     text = 'The lesson has started. Can you join?' if english else 'Занятие уже началось. Сможешь подключиться?'
                 else:
                     text = 'The lesson has started, but your child hasn’t joined yet. Will they be able to join?' if english else 'Занятие уже началось, но ребёнок пока не подключился. Подскажите, сможет присоединиться?'
+                template_key = 'teacher_delay_template' if action == 'teacher_delay' else 'student_delay_template' if role == 'student' else 'parent_delay_template'
+                text = render_template(settings.get(template_key), text, {'time': new_time if action == 'teacher_delay' else lesson['time']})
+                text = channels.message(host, available[matches[0]['connection_id']], text)
                 path = os.path.join(host.tenant_root(), 'personal_notification_log.json')
                 log = host._load_json_raw(path, {})
                 if key in log:
                     return jsonify(status='ok', delivery=log[key])
-                token = bots.cipher().decrypt(record['token'].encode()).decode()
+                token = channels.token_for(host, available[matches[0]['connection_id']])
                 chat = matches[0]['chat_id']
                 log[key] = 'unknown'
                 host._save_json_raw(path, log)
