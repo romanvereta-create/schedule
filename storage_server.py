@@ -187,4 +187,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        # Some BotHost nodes discard stderr when a container exits immediately.
+        # Persist only the exception class and safe message; never environment
+        # values or request data.
+        try:
+            diagnostic_root = Path(os.getenv("DATA_DIR", "/tmp")).resolve()
+            diagnostic_root.mkdir(parents=True, exist_ok=True)
+            _atomic_json(diagnostic_root / "temli-storage-startup-error.json", {
+                "error_type": type(error).__name__,
+                "message": str(error)[:500],
+            })
+        except Exception:
+            pass
+        raise
