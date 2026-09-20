@@ -58,13 +58,24 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
 
 from persistent_storage import resolve_storage_root
+from remote_storage import RemoteStorageError, configured_remote_storage
 from calendar_undo import CalendarUndo
 
 CALENDAR_UNDO = CalendarUndo()
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
 # BASE_DIR remains the data root for tenant helpers and personal-bot modules.
-BASE_DIR = resolve_storage_root(CODE_DIR)
+REMOTE_STORAGE = configured_remote_storage()
+if REMOTE_STORAGE:
+    # Only locks and temporary binary artifacts live here. JSON data is never
+    # written to this directory while remote storage is enabled.
+    BASE_DIR = os.path.abspath(os.getenv(
+        "TEMLI_REMOTE_SCRATCH_DIR",
+        os.path.join(tempfile.gettempdir(), "temli-remote"),
+    ))
+    os.makedirs(BASE_DIR, exist_ok=True)
+else:
+    BASE_DIR = resolve_storage_root(CODE_DIR)
 
 
 def project_path(*parts):
@@ -163,6 +174,14 @@ def _load_json_raw(filename, default=None):
     if default is None:
         default = {}
     with DATA_LOCK:
+        if REMOTE_STORAGE:
+            try:
+                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR)
+                return REMOTE_STORAGE.read_json(relative, default)
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Не удалось прочитать удалённое хранилище ({exc})."
+                ) from exc
         if os.path.exists(filename):
             try:
                 with open(filename, "r", encoding="utf-8") as f:
@@ -176,6 +195,16 @@ def _load_json_raw(filename, default=None):
 
 
 def _save_json_raw(filename, data):
+    if REMOTE_STORAGE:
+        with DATA_LOCK:
+            try:
+                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR)
+                REMOTE_STORAGE.write_json(relative, data)
+                return
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Не удалось записать удалённое хранилище ({exc})."
+                ) from exc
     directory = os.path.dirname(os.path.abspath(filename)) or "."
     os.makedirs(directory, exist_ok=True)
     with DATA_LOCK:
@@ -216,6 +245,9 @@ def _safe_teacher_id(value):
 
 def legacy_root_data_exists():
     """Return True when assigning the root tenant implicitly could expose data."""
+    if REMOTE_STORAGE:
+        return any(bool(_load_json_raw(filename, {}))
+                   for filename in (DATA_FILE, STUDENTS_FILE, SETTINGS_FILE))
     for filename in (DATA_FILE, STUDENTS_FILE, SETTINGS_FILE):
         if not os.path.exists(filename):
             continue
@@ -635,6 +667,8 @@ def _receipt_has_any(settings, keys):
 
 
 def generate_receipt_pdf(settings, client_name, amount, lesson_id, receipt_number=None, created_at=None, service_name_override=None):
+    if REMOTE_STORAGE:
+        raise RuntimeError("Бинарное хранилище тестового стенда ещё не подключено.")
     os.makedirs(current_receipts_dir(), exist_ok=True)
     now = created_at or receipt_now()
     receipt_number = receipt_number or next_receipt_number(now)
@@ -805,6 +839,8 @@ def generate_receipt_pdf(settings, client_name, amount, lesson_id, receipt_numbe
 
 @serialized_data
 def init_book():
+    if REMOTE_STORAGE:
+        return
     book_file = current_book_file()
     if os.path.exists(book_file):
         return
@@ -941,6 +977,8 @@ def recover_payment_transaction():
 @contextmanager
 def payment_files_transaction():
     """Atomically coordinate schedule and book writes with crash recovery."""
+    if REMOTE_STORAGE:
+        raise RuntimeError("Оплаты отключены до подключения удалённого бинарного хранилища.")
     with DATA_LOCK:
         recover_payment_transaction()
         paths = payment_transaction_paths()
@@ -1661,6 +1699,11 @@ def build_week_schedule_pdf(start_date, week_data):
 
 @flask_app.route("/api/download_book", methods=["GET"])
 def download_book():
+    if REMOTE_STORAGE:
+        return jsonify({
+            "status": "error",
+            "message": "Книга учёта временно отключена на тестовом стенде удалённого хранения.",
+        }), 503
     request_user = getattr(g, "telegram_user", {}) or {}
     teacher_target = str(getattr(g, "teacher_id", "") or request_user.get("id", "")).strip()
     teacher_chat_id = numeric_telegram_chat_id(teacher_target)
@@ -1695,6 +1738,11 @@ def download_book():
 
 @flask_app.route("/api/export_week_pdf", methods=["POST"])
 def export_week_pdf():
+    if REMOTE_STORAGE:
+        return jsonify({
+            "status": "error",
+            "message": "Экспорт PDF временно отключён на тестовом стенде удалённого хранения.",
+        }), 503
     data = request.get_json() or {}
     week_start = str(data.get("week_start", "")).strip()
     if not week_start:
@@ -1748,7 +1796,11 @@ def export_week_pdf():
 
 @flask_app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "API работает"})
+    return jsonify({
+        "status": "ok",
+        "message": "API работает",
+        "storage": "remote-json-test" if REMOTE_STORAGE else "local",
+    })
 
 
 @flask_app.route("/api/get_week_schedule", methods=["POST"])
@@ -1887,6 +1939,11 @@ def update_settings_data(data):
 
 @flask_app.route("/api/upload_receipt_asset", methods=["POST"])
 def upload_receipt_asset():
+    if REMOTE_STORAGE:
+        return jsonify({
+            "status": "error",
+            "message": "Загрузка файлов временно отключена на тестовом стенде удалённого хранения.",
+        }), 503
     asset_type = str(request.form.get("asset_type", "")).strip()
     mapping = {
         "logo": "receipt_logo",
@@ -1913,6 +1970,8 @@ def upload_receipt_asset():
 
 @serialized_data
 def save_receipt_asset(asset_type, ext, raw, setting_key):
+    if REMOTE_STORAGE:
+        raise RuntimeError("Бинарное хранилище тестового стенда ещё не подключено.")
     # Request body is already read; a slow upload must not hold the data lock.
     os.makedirs(current_receipt_assets_dir(), exist_ok=True)
     filename = f"{asset_type}{ext}"

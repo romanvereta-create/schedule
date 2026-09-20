@@ -44,6 +44,11 @@ def run(host):
         raise RuntimeError("SCHEDULE_BOT_TOKEN is required")
     if host.ALLOW_UNAUTHENTICATED:
         raise RuntimeError("Production requires ALLOW_UNAUTHENTICATED=false")
+    remote = getattr(host, "REMOTE_STORAGE", None)
+    if remote is not None:
+        # Fail before starting Telegram polling if the Russian storage cannot
+        # be reached or authenticated.
+        remote.read_json("teacher_registry.json", {})
     from automatic_backup import start_worker
     with single_instance(host.BASE_DIR):
         os.makedirs(host.RECEIPT_ASSETS_DIR, exist_ok=True)
@@ -63,7 +68,10 @@ def run(host):
         thread = threading.Thread(target=serve, name="temli-http", daemon=True)
         try:
             thread.start()
-            start_worker(host)
+            if remote is None:
+                start_worker(host)
+            else:
+                print("TEMLI automatic backup: delegated to remote storage", flush=True)
             print("TEMLI production: Waitress; 1 process, 4 HTTP threads", flush=True)
             print("TEMLI storage: " + host.BASE_DIR, flush=True)
             app.run_polling()
