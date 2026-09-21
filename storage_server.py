@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import hmac
 import json
 import os
@@ -18,6 +20,8 @@ from persistent_storage import READY_FILE
 
 CORE_FILES = ("schedule.json", "students.json", "settings.json", "teacher_registry.json")
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
+MAX_FILE_BYTES = 8 * 1024 * 1024
+BINARY_SUFFIXES = {'.xlsx', '.pdf', '.png', '.jpg', '.jpeg'}
 MAX_BACKUP_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 BACKUP_NAME_RE = re.compile(r"^temli-\d{8}T\d{6}(?:\d{6})?Z-[a-z0-9-]{1,32}\.zip$")
 
@@ -86,16 +90,63 @@ def validate_root(root):
 
 
 def _safe_json_path(root, raw):
-    raw = str(raw or "").replace("\\", "/").strip("/")
+    path = _safe_data_path(root, raw)
+    if path.suffix.lower() != '.json':
+        raise StorageServiceError('invalid_path')
+    return path
+
+
+def _safe_data_path(root, raw):
+    raw = str(raw or "").replace("\\", "/")
     part = PurePosixPath(raw)
     if (not raw or part.is_absolute() or ".." in part.parts or "." in part.parts
+            or ':' in raw or any(item in {'', '.', '..'} for item in raw.split('/'))
             or any(not item or len(item) > 128 for item in part.parts)
-            or len(raw) > 512 or part.suffix.lower() != ".json"):
+            or len(raw) > 512):
         raise StorageServiceError("invalid_path")
     path = (root / Path(*part.parts)).resolve()
     if not path.is_relative_to(root):
         raise StorageServiceError("invalid_path")
     return path
+
+
+def _safe_binary_path(root, raw):
+    path = _safe_data_path(root, raw)
+    parts = path.relative_to(root).parts
+    if len(parts) >= 3 and parts[0] == 'teacher_data':
+        if not re.fullmatch(r'[1-9][0-9]*', parts[1]):
+            raise StorageServiceError('invalid_path')
+        parts = parts[2:]
+    valid = (parts == ('book.xlsx',)
+             or (len(parts) == 2 and parts[0] == 'receipt_assets'
+                 and Path(parts[1]).stem in {'logo', 'signature', 'qrcode'}
+                 and path.suffix.lower() in {'.png', '.jpg', '.jpeg'})
+             or (len(parts) == 2 and parts[0] == 'receipts'
+                 and re.fullmatch(r'[A-Za-z0-9_-]+\.pdf', parts[1])))
+    if not valid:
+        raise StorageServiceError('invalid_path')
+    return path
+
+
+def _atomic_bytes(path, raw):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='temli_file_', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as target:
+            target.write(raw)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _archive_data_path(root, relative):
+    path = _safe_data_path(root, relative)
+    if path.suffix.lower() == '.json':
+        return path
+    return _safe_binary_path(root, relative)
 
 
 def backup_root(root, environ=None):
@@ -132,15 +183,20 @@ def _snapshot_files(root):
     root = Path(root).resolve()
     files = []
     total = 0
-    for path in sorted(root.rglob("*.json")):
+    for path in sorted(root.rglob('*')):
+        if path.suffix.lower() not in BINARY_SUFFIXES | {'.json'}:
+            continue
+        if path.is_symlink():
+            raise StorageServiceError('Unsafe backup source')
         path = path.resolve()
         if not path.is_file() or not path.is_relative_to(root):
             continue
         relative = path.relative_to(root).as_posix()
-        _safe_json_path(root, relative)
+        _archive_data_path(root, relative)
         raw = path.read_bytes()
         try:
-            json.loads(raw.decode("utf-8"))
+            if path.suffix.lower() == '.json':
+                json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise StorageServiceError("Cannot back up corrupt JSON: " + relative) from None
         total += len(raw)
@@ -175,7 +231,7 @@ def create_backup(root, directory, *, reason="manual", retention=30):
     name = "temli-" + created.strftime("%Y%m%dT%H%M%S%fZ") + "-" + reason + ".zip"
     target = directory / name
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "created_at": created.isoformat(),
         "reason": reason,
         "files": [
@@ -214,7 +270,7 @@ def inspect_backup(path):
             if total > MAX_BACKUP_UNCOMPRESSED_BYTES:
                 raise StorageServiceError("invalid_backup")
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-            if manifest.get("schema") != 1 or not isinstance(manifest.get("files"), list):
+            if not isinstance(manifest, dict) or manifest.get("schema") not in (1, 2) or not isinstance(manifest.get("files"), list):
                 raise StorageServiceError("invalid_backup")
             payload = {}
             expected_members = {"manifest.json"}
@@ -225,15 +281,19 @@ def inspect_backup(path):
                 part = PurePosixPath(relative)
                 if (not relative or part.is_absolute() or ".." in part.parts or "." in part.parts
                         or any(not item or len(item) > 128 for item in part.parts)
-                        or len(relative) > 512 or part.suffix.lower() != ".json"
+                        or len(relative) > 512
                         or relative in payload):
                     raise StorageServiceError("invalid_backup")
+                _archive_data_path(path.parent, relative)
+                if manifest['schema'] == 1 and part.suffix.lower() != '.json':
+                    raise StorageServiceError('invalid_backup')
                 member = "data/" + relative
                 expected_members.add(member)
                 raw = archive.read(member)
                 if len(raw) != entry.get("size") or hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
                     raise StorageServiceError("invalid_backup")
-                json.loads(raw.decode("utf-8"))
+                if part.suffix.lower() == '.json':
+                    json.loads(raw.decode("utf-8"))
                 payload[relative] = raw
             if set(names) != expected_members:
                 raise StorageServiceError("invalid_backup")
@@ -249,23 +309,22 @@ def restore_backup(root, archive_path, directory, *, retention=30):
     root = Path(root).resolve()
     manifest, payload = inspect_backup(archive_path)
     marker = json.loads(payload[READY_FILE].decode("utf-8"))
+    if not isinstance(marker, dict):
+        raise StorageServiceError('invalid_backup_marker')
     required = marker.get("required_files")
     if (marker.get("schema") != 1 or marker.get("state") != "ready"
             or not isinstance(required, list)
+            or any(not isinstance(item, str) for item in required)
             or not set(CORE_FILES).issubset(required)
             or not set(required).issubset(payload)):
         raise StorageServiceError("invalid_backup_marker")
+    destinations = {relative: _archive_data_path(root, relative) for relative in payload}
     safety_path, _ = create_backup(root, directory, reason="pre-restore", retention=retention)
     for relative, raw in payload.items():
-        destination = _safe_json_path(root, relative)
-        value = json.loads(raw.decode("utf-8"))
+        destination = destinations[relative]
         if destination.exists():
-            try:
-                current = json.loads(destination.read_text(encoding="utf-8"))
-                _atomic_json(Path(str(destination) + ".bak"), current)
-            except (OSError, json.JSONDecodeError):
-                pass
-        _atomic_json(destination, value)
+            _atomic_bytes(Path(str(destination) + '.bak'), destination.read_bytes())
+        _atomic_bytes(destination, raw)
     validate_root(root)
     return manifest, safety_path
 
@@ -284,8 +343,8 @@ def list_backups(directory):
                 "name": path.name,
                 "size": path.stat().st_size,
                 "sha256": _file_sha256(path),
-                "created_at": manifest["created_at"],
-                "reason": manifest["reason"],
+                "created_at": manifest.get("created_at"),
+                "reason": manifest.get("reason"),
                 "file_count": len(manifest["files"]),
             })
         except StorageServiceError:
@@ -341,7 +400,50 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
 
     @app.get("/health")
     def health():
-        return jsonify(status="ok", service="temli-storage", schema=1)
+        return jsonify(status="ok", service="temli-storage", schema=1,
+                       capabilities=['json', 'files-v1', 'backup-v2'])
+
+    @app.post('/v1/files/read')
+    def file_read():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify(status='error', code='invalid_request'), 400
+        try:
+            path = _safe_binary_path(root, body.get('path'))
+            with lock:
+                if not path.exists():
+                    return jsonify(status='ok', exists=False, data=None, version=None)
+                if path.stat().st_size > MAX_FILE_BYTES:
+                    return jsonify(status='error', code='file_too_large'), 413
+                raw = path.read_bytes()
+                return jsonify(status='ok', exists=True,
+                               data=base64.b64encode(raw).decode('ascii'),
+                               version=hashlib.sha256(raw).hexdigest())
+        except StorageServiceError as error:
+            return jsonify(status='error', code=str(error)), 400
+
+    @app.post('/v1/files/write')
+    def file_write():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify(status='error', code='invalid_request'), 400
+        try:
+            path = _safe_binary_path(root, body.get('path'))
+            if 'expected_version' not in body:
+                return jsonify(status='error', code='expected_version_required'), 400
+            raw = base64.b64decode(body.get('data', ''), validate=True)
+            if not raw or len(raw) > MAX_FILE_BYTES:
+                return jsonify(status='error', code='invalid_file_size'), 400
+            with lock:
+                actual = _file_sha256(path) if path.exists() else None
+                if body['expected_version'] != actual:
+                    return jsonify(status='error', code='version_conflict'), 409
+                if path.exists():
+                    _atomic_bytes(Path(str(path) + '.bak'), path.read_bytes())
+                _atomic_bytes(path, raw)
+                return jsonify(status='ok', version=hashlib.sha256(raw).hexdigest())
+        except (StorageServiceError, ValueError, TypeError, binascii.Error):
+            return jsonify(status='error', code='invalid_file_request'), 400
 
     @app.post("/v1/json/read")
     def read_json():
