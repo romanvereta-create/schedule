@@ -9,4 +9,6 @@ except BaseException:
     folder.mkdir(parents=True, exist_ok=True)
     error_file = folder / "temli-test-startup-error.txt"
     error_file.write_text(traceback.format_exc(), encoding="utf-8")
-    raise
+    import time
+    while True:
+        time.sleep(3600)
