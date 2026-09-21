@@ -86,7 +86,10 @@ TOKEN = os.getenv("SCHEDULE_BOT_TOKEN")
 DATA_FILE = project_path("schedule.json")
 STUDENTS_FILE = project_path("students.json")
 SETTINGS_FILE = project_path("settings.json")
-WEBAPP_URL = "https://romanvereta-create.github.io/schedule-mini-app/"
+WEBAPP_URL = os.getenv(
+    "SCHEDULE_WEBAPP_URL",
+    "https://romanvereta-create.github.io/schedule-mini-app/",
+)
 WEBAPP_ORIGIN = os.getenv("SCHEDULE_WEBAPP_ORIGIN", "https://romanvereta-create.github.io")
 OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
