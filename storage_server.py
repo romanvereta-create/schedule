@@ -5,16 +5,21 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import tempfile
 import threading
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from persistent_storage import READY_FILE
 
 
 CORE_FILES = ("schedule.json", "students.json", "settings.json", "teacher_registry.json")
 MAX_REQUEST_BYTES = 12 * 1024 * 1024
+MAX_BACKUP_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
+BACKUP_NAME_RE = re.compile(r"^temli-\d{8}T\d{6}(?:\d{6})?Z-[a-z0-9-]{1,32}\.zip$")
 
 
 class StorageServiceError(RuntimeError):
@@ -93,7 +98,218 @@ def _safe_json_path(root, raw):
     return path
 
 
-def create_app(root, token, *, initialize=False):
+def backup_root(root, environ=None):
+    environ = os.environ if environ is None else environ
+    explicit = str(environ.get("TEMLI_BACKUP_DIR", "") or "").strip()
+    path = Path(explicit) if explicit else Path(root).resolve().parent / "temli-backups"
+    if not path.is_absolute():
+        raise StorageServiceError("TEMLI_BACKUP_DIR must be absolute")
+    path = path.resolve()
+    if path == Path(root).resolve() or path.is_relative_to(Path(root).resolve()):
+        raise StorageServiceError("Backup directory must be outside TEMLI storage")
+    return path
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _backup_path(directory, raw_name):
+    name = str(raw_name or "")
+    if not BACKUP_NAME_RE.fullmatch(name):
+        raise StorageServiceError("invalid_backup_name")
+    path = (Path(directory).resolve() / name).resolve()
+    if path.parent != Path(directory).resolve():
+        raise StorageServiceError("invalid_backup_name")
+    return path
+
+
+def _snapshot_files(root):
+    root = Path(root).resolve()
+    files = []
+    total = 0
+    for path in sorted(root.rglob("*.json")):
+        path = path.resolve()
+        if not path.is_file() or not path.is_relative_to(root):
+            continue
+        relative = path.relative_to(root).as_posix()
+        _safe_json_path(root, relative)
+        raw = path.read_bytes()
+        try:
+            json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise StorageServiceError("Cannot back up corrupt JSON: " + relative) from None
+        total += len(raw)
+        if total > MAX_BACKUP_UNCOMPRESSED_BYTES:
+            raise StorageServiceError("Backup exceeds uncompressed size limit")
+        files.append((relative, raw))
+    if not files:
+        raise StorageServiceError("No JSON files to back up")
+    return files
+
+
+def prune_backups(directory, retention):
+    directory = Path(directory).resolve()
+    retention = max(1, int(retention))
+    archives = sorted(
+        (path for path in directory.glob("temli-*.zip") if BACKUP_NAME_RE.fullmatch(path.name)),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    for stale in archives[retention:]:
+        stale.unlink()
+
+
+def create_backup(root, directory, *, reason="manual", retention=30):
+    root = Path(root).resolve()
+    directory = Path(directory).resolve()
+    reason = re.sub(r"[^a-z0-9-]+", "-", str(reason).lower()).strip("-") or "manual"
+    reason = reason[:32]
+    directory.mkdir(parents=True, exist_ok=True)
+    files = _snapshot_files(root)
+    created = datetime.now(timezone.utc)
+    name = "temli-" + created.strftime("%Y%m%dT%H%M%S%fZ") + "-" + reason + ".zip"
+    target = directory / name
+    manifest = {
+        "schema": 1,
+        "created_at": created.isoformat(),
+        "reason": reason,
+        "files": [
+            {"path": relative, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+            for relative, raw in files
+        ],
+    }
+    fd, temporary = tempfile.mkstemp(prefix=".temli-backup-", suffix=".tmp", dir=directory)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for relative, raw in files:
+                archive.writestr("data/" + relative, raw)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    prune_backups(directory, retention)
+    return target, manifest
+
+
+def inspect_backup(path):
+    path = Path(path).resolve()
+    if not path.is_file():
+        raise StorageServiceError("backup_not_found")
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            if len(names) != len(set(names)) or "manifest.json" not in names:
+                raise StorageServiceError("invalid_backup")
+            if any(info.is_dir() for info in infos):
+                raise StorageServiceError("invalid_backup")
+            total = sum(info.file_size for info in infos)
+            if total > MAX_BACKUP_UNCOMPRESSED_BYTES:
+                raise StorageServiceError("invalid_backup")
+            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if manifest.get("schema") != 1 or not isinstance(manifest.get("files"), list):
+                raise StorageServiceError("invalid_backup")
+            payload = {}
+            expected_members = {"manifest.json"}
+            for entry in manifest["files"]:
+                if not isinstance(entry, dict):
+                    raise StorageServiceError("invalid_backup")
+                relative = str(entry.get("path", ""))
+                part = PurePosixPath(relative)
+                if (not relative or part.is_absolute() or ".." in part.parts or "." in part.parts
+                        or any(not item or len(item) > 128 for item in part.parts)
+                        or len(relative) > 512 or part.suffix.lower() != ".json"
+                        or relative in payload):
+                    raise StorageServiceError("invalid_backup")
+                member = "data/" + relative
+                expected_members.add(member)
+                raw = archive.read(member)
+                if len(raw) != entry.get("size") or hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
+                    raise StorageServiceError("invalid_backup")
+                json.loads(raw.decode("utf-8"))
+                payload[relative] = raw
+            if set(names) != expected_members:
+                raise StorageServiceError("invalid_backup")
+    except (OSError, KeyError, TypeError, ValueError, UnicodeDecodeError,
+            json.JSONDecodeError, zipfile.BadZipFile):
+        raise StorageServiceError("invalid_backup") from None
+    if not set(CORE_FILES).issubset(payload) or READY_FILE not in payload:
+        raise StorageServiceError("incomplete_backup")
+    return manifest, payload
+
+
+def restore_backup(root, archive_path, directory, *, retention=30):
+    root = Path(root).resolve()
+    manifest, payload = inspect_backup(archive_path)
+    marker = json.loads(payload[READY_FILE].decode("utf-8"))
+    required = marker.get("required_files")
+    if (marker.get("schema") != 1 or marker.get("state") != "ready"
+            or not isinstance(required, list)
+            or not set(CORE_FILES).issubset(required)
+            or not set(required).issubset(payload)):
+        raise StorageServiceError("invalid_backup_marker")
+    safety_path, _ = create_backup(root, directory, reason="pre-restore", retention=retention)
+    for relative, raw in payload.items():
+        destination = _safe_json_path(root, relative)
+        value = json.loads(raw.decode("utf-8"))
+        if destination.exists():
+            try:
+                current = json.loads(destination.read_text(encoding="utf-8"))
+                _atomic_json(Path(str(destination) + ".bak"), current)
+            except (OSError, json.JSONDecodeError):
+                pass
+        _atomic_json(destination, value)
+    validate_root(root)
+    return manifest, safety_path
+
+
+def list_backups(directory):
+    directory = Path(directory).resolve()
+    result = []
+    if not directory.is_dir():
+        return result
+    for path in sorted(directory.glob("temli-*.zip"), key=lambda item: item.name, reverse=True):
+        if not BACKUP_NAME_RE.fullmatch(path.name):
+            continue
+        try:
+            manifest, _ = inspect_backup(path)
+            result.append({
+                "name": path.name,
+                "size": path.stat().st_size,
+                "sha256": _file_sha256(path),
+                "created_at": manifest["created_at"],
+                "reason": manifest["reason"],
+                "file_count": len(manifest["files"]),
+            })
+        except StorageServiceError:
+            result.append({"name": path.name, "valid": False})
+    return result
+
+
+def start_backup_worker(root, directory, lock, *, interval, retention):
+    stop = threading.Event()
+
+    def run():
+        while not stop.wait(interval):
+            try:
+                with lock:
+                    create_backup(root, directory, reason="automatic", retention=retention)
+            except Exception as error:
+                print("TEMLI automatic backup failed: " + type(error).__name__, flush=True)
+
+    thread = threading.Thread(target=run, name="temli-storage-backup", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def create_app(root, token, *, initialize=False, backups=None, backup_retention=30):
     root = Path(root).resolve()
     token = str(token or "")
     if len(token) < 32:
@@ -105,6 +321,11 @@ def create_app(root, token, *, initialize=False):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
     lock = threading.RLock()
+    backups = backup_root(root) if backups is None else Path(backups).resolve()
+    backup_retention = max(1, int(backup_retention))
+    app.extensions["temli_storage_lock"] = lock
+    app.extensions["temli_backup_root"] = backups
+    app.extensions["temli_backup_retention"] = backup_retention
 
     @app.before_request
     def authenticate():
@@ -114,7 +335,7 @@ def create_app(root, token, *, initialize=False):
         expected = "Bearer " + token
         if not hmac.compare_digest(supplied, expected):
             return jsonify(status="error", code="unauthorized"), 401
-        if not request.is_json:
+        if request.method in {"POST", "PUT", "PATCH"} and not request.is_json:
             return jsonify(status="error", code="json_required"), 415
         return None
 
@@ -163,6 +384,70 @@ def create_app(root, token, *, initialize=False):
             _atomic_json(path, body["data"])
             return jsonify(status="ok", version=version_for(body["data"]))
 
+    @app.get("/v1/backups")
+    def backup_list():
+        with lock:
+            return jsonify(status="ok", backups=list_backups(backups))
+
+    @app.post("/v1/backups")
+    def backup_create():
+        with lock:
+            try:
+                path, manifest = create_backup(
+                    root, backups, reason="manual", retention=backup_retention,
+                )
+            except StorageServiceError as error:
+                return jsonify(status="error", code=str(error)), 503
+            return jsonify(
+                status="ok",
+                name=path.name,
+                sha256=_file_sha256(path),
+                created_at=manifest["created_at"],
+                file_count=len(manifest["files"]),
+            )
+
+    @app.get("/v1/backups/<name>")
+    def backup_download(name):
+        try:
+            path = _backup_path(backups, name)
+            inspect_backup(path)
+        except StorageServiceError as error:
+            status = 404 if str(error) == "backup_not_found" else 400
+            return jsonify(status="error", code=str(error)), status
+        return send_file(
+            path,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=path.name,
+            conditional=True,
+        )
+
+    @app.post("/v1/backups/<name>/restore")
+    def backup_restore(name):
+        body = request.get_json(silent=True) or {}
+        expected_confirmation = "RESTORE " + name
+        if body.get("apply") is not True or body.get("confirmation") != expected_confirmation:
+            return jsonify(
+                status="error",
+                code="restore_confirmation_required",
+                confirmation=expected_confirmation,
+            ), 409
+        with lock:
+            try:
+                path = _backup_path(backups, name)
+                manifest, safety = restore_backup(
+                    root, path, backups, retention=backup_retention,
+                )
+            except StorageServiceError as error:
+                status = 404 if str(error) == "backup_not_found" else 400
+                return jsonify(status="error", code=str(error)), status
+            return jsonify(
+                status="ok",
+                restored=name,
+                restored_created_at=manifest["created_at"],
+                safety_backup=safety.name,
+            )
+
     return app
 
 
@@ -172,7 +457,29 @@ def main():
     root = storage_root()
     token = os.getenv("TEMLI_STORAGE_TOKEN", "")
     initialize = os.getenv("TEMLI_STORAGE_INITIALIZE_EMPTY", "false").lower() == "true"
-    app = create_app(root, token, initialize=initialize)
+    backups = backup_root(root)
+    retention = int(os.getenv("TEMLI_BACKUP_RETENTION", "30"))
+    interval = int(os.getenv("TEMLI_BACKUP_INTERVAL_SECONDS", "21600"))
+    if retention < 1 or retention > 1000:
+        raise StorageServiceError("TEMLI_BACKUP_RETENTION must be between 1 and 1000")
+    if interval != 0 and interval < 300:
+        raise StorageServiceError("TEMLI_BACKUP_INTERVAL_SECONDS must be 0 or at least 300")
+    app = create_app(
+        root,
+        token,
+        initialize=initialize,
+        backups=backups,
+        backup_retention=retention,
+    )
+    lock = app.extensions["temli_storage_lock"]
+    stop = None
+    worker = None
+    if interval:
+        with lock:
+            create_backup(root, backups, reason="startup", retention=retention)
+        stop, worker = start_backup_worker(
+            root, backups, lock, interval=interval, retention=retention,
+        )
     server = create_server(
         app,
         host="0.0.0.0",
@@ -183,7 +490,14 @@ def main():
     )
     print("TEMLI Russian JSON storage: ready", flush=True)
     print("TEMLI storage: " + str(root), flush=True)
-    server.run()
+    print("TEMLI backups: " + str(backups), flush=True)
+    try:
+        server.run()
+    finally:
+        if stop is not None:
+            stop.set()
+        if worker is not None:
+            worker.join(timeout=5)
 
 
 if __name__ == "__main__":
