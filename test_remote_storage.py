@@ -24,10 +24,13 @@ from remote_storage import (
 )
 from storage_server import (
     StorageServiceError,
+    BACKUP_ENVELOPE_MAGIC,
+    backup_encryption_settings,
     create_app,
     create_backup,
     configured_storage_tokens,
     inspect_backup,
+    migrate_plaintext_backups,
     restore_backup,
     version_for,
 )
@@ -214,6 +217,81 @@ class RemoteStorageServerTests(unittest.TestCase):
         (self.root / 'book.xlsx').write_bytes(b'changed')
         restore_backup(self.root, archive, self.backups)
         self.assertEqual((self.root / 'book.xlsx').read_bytes(), b'workbook')
+
+    def test_encrypted_backup_round_trip_wrong_key_and_tampering(self):
+        key = hashlib.sha256(b'test-backup-key').digest()
+        wrong = hashlib.sha256(b'wrong-backup-key').digest()
+        (self.root / 'settings.json').write_text(
+            json.dumps({'private': 'student data'}), encoding='utf-8')
+        archive, _ = create_backup(
+            self.root, self.backups, encryption_key=key)
+        raw = archive.read_bytes()
+        self.assertTrue(raw.startswith(BACKUP_ENVELOPE_MAGIC))
+        self.assertNotIn(b'student data', raw)
+        manifest, payload = inspect_backup(archive, encryption_key=key)
+        self.assertEqual(manifest['schema'], 2)
+        self.assertIn(b'student data', payload['settings.json'])
+        with self.assertRaisesRegex(StorageServiceError, 'invalid_backup'):
+            inspect_backup(archive, encryption_key=wrong)
+        tampered = bytearray(raw)
+        tampered[-1] ^= 1
+        archive.write_bytes(tampered)
+        with self.assertRaisesRegex(StorageServiceError, 'invalid_backup'):
+            inspect_backup(archive, encryption_key=key)
+
+    def test_encrypted_restore_round_trip_and_encrypted_safety_backup(self):
+        key = hashlib.sha256(b'restore-key').digest()
+        (self.root / 'students.json').write_text(
+            json.dumps({'1': {'name': 'Original'}}), encoding='utf-8')
+        archive, _ = create_backup(
+            self.root, self.backups, encryption_key=key)
+        (self.root / 'students.json').write_text(
+            json.dumps({'1': {'name': 'Changed'}}), encoding='utf-8')
+        _manifest, safety = restore_backup(
+            self.root, archive, self.backups, encryption_key=key)
+        restored = json.loads((self.root / 'students.json').read_text(encoding='utf-8'))
+        self.assertEqual(restored['1']['name'], 'Original')
+        self.assertTrue(safety.read_bytes().startswith(BACKUP_ENVELOPE_MAGIC))
+        inspect_backup(safety, encryption_key=key)
+
+    def test_plaintext_backup_migration_requires_explicit_opt_in(self):
+        plaintext, _ = create_backup(self.root, self.backups)
+        key = hashlib.sha256(b'migration-key').digest()
+        with self.assertRaisesRegex(StorageServiceError, 'plaintext_backup_disabled'):
+            inspect_backup(plaintext, encryption_key=key)
+        manifest, _ = inspect_backup(
+            plaintext, encryption_key=key, allow_plaintext=True)
+        self.assertEqual(manifest['schema'], 2)
+        # All backups created after enabling a key are encrypted, even while
+        # legacy plaintext reads remain temporarily enabled.
+        encrypted, _ = create_backup(
+            self.root, self.backups, encryption_key=key)
+        self.assertTrue(encrypted.read_bytes().startswith(BACKUP_ENVELOPE_MAGIC))
+
+    def test_plaintext_backup_migration_is_atomic_and_idempotent(self):
+        first, _ = create_backup(self.root, self.backups, reason='first')
+        second, _ = create_backup(self.root, self.backups, reason='second')
+        key = hashlib.sha256(b'migration-key-2').digest()
+        self.assertEqual(migrate_plaintext_backups(self.backups, key), 2)
+        for archive in (first, second):
+            self.assertTrue(archive.read_bytes().startswith(BACKUP_ENVELOPE_MAGIC))
+            inspect_backup(archive, encryption_key=key)
+        self.assertEqual(migrate_plaintext_backups(self.backups, key), 0)
+
+    def test_backup_encryption_key_configuration_is_strict(self):
+        encoded = base64.urlsafe_b64encode(b'k' * 32).decode('ascii')
+        key, allow_plaintext = backup_encryption_settings({
+            'TEMLI_BACKUP_ENCRYPTION_KEY': encoded,
+            'TEMLI_ALLOW_PLAINTEXT_BACKUPS': 'true',
+        })
+        self.assertEqual(key, b'k' * 32)
+        self.assertTrue(allow_plaintext)
+        for value in ('', 'short', base64.urlsafe_b64encode(b'k' * 31).decode('ascii')):
+            with self.subTest(value=value):
+                with self.assertRaises(StorageServiceError):
+                    backup_encryption_settings({
+                        'TEMLI_BACKUP_ENCRYPTION_KEY': value,
+                    })
 
     def test_real_client_binary_roundtrip_and_conflict(self):
         server = make_server('127.0.0.1', 0, self.app)

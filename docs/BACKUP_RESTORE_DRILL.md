@@ -10,6 +10,9 @@ The purpose is to prove recoverability without writing to live storage.
 
 ## Preconditions
 
+- Keep `TEMLI_BACKUP_ENCRYPTION_KEY` only in the storage service secret store.
+  It must be URL-safe base64 for exactly 32 random bytes and must not be copied
+  into Git, an archive, a replica directory, or a drill report.
 - Use the newest archive reported as verified by Russian storage.
 - Record its name, SHA-256, creation time, and release ID without recording data content.
 - Restore only into a new temporary directory or isolated test service.
@@ -17,8 +20,9 @@ The purpose is to prove recoverability without writing to live storage.
 
 ## Drill
 
-1. Download the selected archive through the authenticated backup endpoint.
-2. Verify the outer SHA-256 and every member declared by `manifest.json`.
+1. Download the selected encrypted archive through the authenticated backup endpoint.
+2. Verify the outer SHA-256, decrypt/authenticate it in the isolated drill
+   process, and verify every member declared by `manifest.json`.
 3. Reject duplicate paths, traversal paths, unexpected members, invalid JSON,
    and archives above the configured compressed/uncompressed limits.
 4. Restore into an empty temporary directory.
@@ -43,3 +47,17 @@ The purpose is to prove recoverability without writing to live storage.
 Treat failure as SEV-2. Keep live storage untouched, retain the failed archive
 and generic error type, select the preceding verified archive, and investigate
 before the next release.
+
+## One-time plaintext migration
+
+Existing ZIP backups are never accepted implicitly once encryption is enabled.
+For the migration restart only, set both
+`TEMLI_ALLOW_PLAINTEXT_BACKUPS=true` and
+`TEMLI_MIGRATE_PLAINTEXT_BACKUPS=true`. The service validates each legacy ZIP,
+atomically replaces it with an authenticated encrypted envelope, and verifies
+the result. Confirm readiness and an isolated restore, then remove both flags
+(or set them to `false`) and restart. New backups are always encrypted whenever
+`TEMLI_BACKUP_ENCRYPTION_KEY` is configured.
+
+Keep an escrowed copy of the encryption key outside the storage host. Losing
+the key makes every encrypted backup and off-site replica unrecoverable.
