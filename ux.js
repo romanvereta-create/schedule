@@ -324,6 +324,9 @@ function uxEndTime(time, duration) {
     for (const id of formIds) {
         const overlay = byId(id);
         let activeKey = '', wasOpen = false, restoring = false;
+        let draftCaptureHandle = null;
+        let draftCaptureUsesIdleCallback = false;
+        let skipCaptureOnClose = false;
         const notice = document.createElement('div');
         notice.className = 'ux-draft-notice';
         notice.hidden = true;
@@ -361,14 +364,47 @@ function uxEndTime(time, duration) {
             label.dataset.uxEn = 'Unsaved changes';
             notice.hidden = false;
         }
-        overlay.addEventListener('input',capture);
-        overlay.addEventListener('change',capture);
+        function cancelScheduledCapture() {
+            if (draftCaptureHandle === null) return;
+            if (draftCaptureUsesIdleCallback && typeof window.cancelIdleCallback === 'function') {
+                window.cancelIdleCallback(draftCaptureHandle);
+            } else {
+                window.clearTimeout(draftCaptureHandle);
+            }
+            draftCaptureHandle = null;
+        }
+        function flushScheduledCapture() {
+            cancelScheduledCapture();
+            capture();
+        }
+        function scheduleCapture() {
+            cancelScheduledCapture();
+            // Reading every field and contact row is intentionally kept out of the
+            // input event. This lets the browser paint the typed digit/selection
+            // before maintaining the in-memory draft on slower Telegram WebViews.
+            if (typeof window.requestIdleCallback === 'function') {
+                draftCaptureUsesIdleCallback = true;
+                draftCaptureHandle = window.requestIdleCallback(() => {
+                    draftCaptureHandle = null;
+                    capture();
+                }, {timeout: 250});
+            } else {
+                draftCaptureUsesIdleCallback = false;
+                draftCaptureHandle = window.setTimeout(() => {
+                    draftCaptureHandle = null;
+                    capture();
+                }, 120);
+            }
+        }
+        overlay.addEventListener('input',scheduleCapture);
+        overlay.addEventListener('change',scheduleCapture);
         overlay.addEventListener('click', event => {
-            if (event.target.closest('.contact-remove-btn,.add-contact-btn,.student-status-btn')) queueMicrotask(capture);
+            if (event.target.closest('.contact-remove-btn,.add-contact-btn,.student-status-btn')) queueMicrotask(scheduleCapture);
         });
         new MutationObserver(() => {
             const open = !overlay.classList.contains('hidden');
             if (open && (!wasOpen || activeKey !== draftKey(id))) {
+                skipCaptureOnClose = false;
                 wasOpen = true;
                 activeKey = draftKey(id);
                 const draft = drafts.get(activeKey);
@@ -401,10 +437,22 @@ function uxEndTime(time, duration) {
                     label.dataset.uxEn = 'Draft restored';
                     restoring = false;
                 }
-            } else if (!open) wasOpen = false;
+            } else if (!open) {
+                // Preserve the last keystroke even when the form is closed before
+                // the idle callback gets a chance to run.
+                if (skipCaptureOnClose) cancelScheduledCapture();
+                else flushScheduledCapture();
+                skipCaptureOnClose = false;
+                wasOpen = false;
+            }
         }).observe(overlay,{attributes:true,attributeFilter:['class']});
         window.addEventListener('temli-saved', event => {
-            if (event.detail.overlay === id) { drafts.delete(activeKey); notice.hidden = true; }
+            if (event.detail.overlay === id) {
+                cancelScheduledCapture();
+                skipCaptureOnClose = true;
+                drafts.delete(activeKey);
+                notice.hidden = true;
+            }
         });
     }
     window.addEventListener('temli-saved', async event => {
@@ -478,7 +526,7 @@ function uxEndTime(time, duration) {
         notice.setAttribute('data-i18n-ignore','');
         (overlay.querySelector('.modal-actions') || overlay.querySelector('.modal-actions-column')).before(notice);
         let sequence = 0, timer;
-        async function check() {
+        function check() {
             const seq = ++sequence;
             if (overlay.classList.contains('hidden')) { notice.hidden = true; notice.textContent = ''; return; }
             const {date,time,duration,exclude} = values();
@@ -487,10 +535,15 @@ function uxEndTime(time, duration) {
             const end = new Date(start.getTime() + duration * 60000);
             const previous = new Date(start); previous.setDate(previous.getDate()-1);
             const weeks = [...new Set([dateKey(getMonday(previous)),dateKey(getMonday(start)),dateKey(getMonday(end))])];
-            notice.textContent = uxText('Проверяем пересечения…','Checking for overlaps…');
-            notice.hidden = false;
             try {
-                const results = await Promise.all(weeks.map(key => fetchWeekSchedule(new Date(`${key}T12:00:00`),{allowCached:true})));
+                // Conflict preview is advisory. Never let it compete with the save
+                // request for cross-region storage: inspect the displayed week and
+                // already-cached adjacent weeks only. The server remains the final
+                // authority when the form is saved.
+                const currentWeek = dateKey(state.currentMonday);
+                const results = weeks.map(key => key === currentWeek
+                    ? {requestedWeek:key, schedule:state.schedule}
+                    : cachedWeekSchedule(key)).filter(Boolean);
                 if (seq !== sequence || overlay.classList.contains('hidden')) return;
                 const conflicts = [];
                 for (const result of results) for (const [key,items] of Object.entries(result.schedule || {})) for (const item of items) {
@@ -534,5 +587,3 @@ function uxEndTime(time, duration) {
     window.addEventListener('temli-language-change',localizeUx);
     localizeUx();
 })();
-
-

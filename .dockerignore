@@ -6,3 +6,13 @@ __pycache__
 .env
 .release-venv
 .venv-storage-check
+
+# Bot3 is a Python service. Keep package-manager manifests out of the image so
+# an accidentally added frontend manifest cannot become a runtime entrypoint.
+package.json
+package-lock.json
+npm-shrinkwrap.json
+yarn.lock
+pnpm-lock.yaml
+bun.lock
+bun.lockb
