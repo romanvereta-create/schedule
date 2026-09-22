@@ -27,7 +27,8 @@ REQUIRED_ENV = (
     "SCHEDULE_WEBAPP_URL",
     "SCHEDULE_WEBAPP_ORIGIN",
     "TEMLI_STORAGE_URL",
-    "TEMLI_STORAGE_TOKEN",
+    "TEMLI_STORAGE_APP_TOKEN",
+    "TEMLI_STORAGE_BACKUP_READ_TOKEN",
     "TEMLI_REPLICA_DIR",
     "ALLOW_UNAUTHENTICATED",
 )
@@ -191,13 +192,39 @@ def check_environment(environ: Mapping[str, str]) -> list[Result]:
     else:
         results.append(_ok("storage_url", "storage uses a non-production HTTPS host"))
 
-    storage_token = str(environ.get("TEMLI_STORAGE_TOKEN", ""))
-    if len(storage_token) < 32 or storage_token.strip() != storage_token:
+    storage_tokens = {
+        "application": str(environ.get("TEMLI_STORAGE_APP_TOKEN", "")),
+        "backup-read": str(environ.get("TEMLI_STORAGE_BACKUP_READ_TOKEN", "")),
+    }
+    invalid_storage_tokens = [
+        label for label, value in storage_tokens.items()
+        if len(value) < 32 or value.strip() != value
+    ]
+    if invalid_storage_tokens:
         results.append(
-            _error("storage_token_format", "TEMLI_STORAGE_TOKEN format is invalid")
+            _error("storage_token_format", "scoped storage token format is invalid")
         )
+    elif len(set(storage_tokens.values())) != len(storage_tokens):
+        results.append(_error(
+            "storage_token_format", "application and backup-read tokens must be different"
+        ))
     else:
-        results.append(_ok("storage_token_format", "storage token format is valid"))
+        results.append(_ok("storage_token_format", "scoped storage tokens are valid and distinct"))
+
+    if str(environ.get("TEMLI_STORAGE_ADMIN_TOKEN", "")):
+        results.append(_error(
+            "storage_least_privilege",
+            "TEMLI_STORAGE_ADMIN_TOKEN must not be present on the application host",
+        ))
+    elif str(environ.get("TEMLI_STORAGE_TOKEN", "")):
+        results.append(_error(
+            "storage_least_privilege",
+            "legacy TEMLI_STORAGE_TOKEN must be removed from the application host",
+        ))
+    else:
+        results.append(_ok(
+            "storage_least_privilege", "application host has no storage admin or legacy token"
+        ))
 
     replica_dir = str(environ.get("TEMLI_REPLICA_DIR", "")).strip()
     if not replica_dir.startswith("/app/data/") or ".." in replica_dir.split("/"):

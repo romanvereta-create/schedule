@@ -18,7 +18,8 @@ GOOD_ENV = {
     "SCHEDULE_WEBAPP_URL": "https://candidate.example/app/",
     "SCHEDULE_WEBAPP_ORIGIN": "https://candidate.example",
     "TEMLI_STORAGE_URL": "https://storage-candidate.example/",
-    "TEMLI_STORAGE_TOKEN": "s" * 32,
+    "TEMLI_STORAGE_APP_TOKEN": "a" * 32,
+    "TEMLI_STORAGE_BACKUP_READ_TOKEN": "b" * 32,
     "TEMLI_REPLICA_DIR": "/app/data/temli-storage-replica",
     "ALLOW_UNAUTHENTICATED": "false",
 }
@@ -108,6 +109,18 @@ class CandidatePreflightTests(unittest.TestCase):
                 )
                 self.assertEqual(failure["status"], "error")
 
+    def test_storage_scopes_are_distinct_and_admin_is_absent(self):
+        for updates in (
+            {"TEMLI_STORAGE_BACKUP_READ_TOKEN": "a" * 32},
+            {"TEMLI_STORAGE_ADMIN_TOKEN": "c" * 32},
+            {"TEMLI_STORAGE_TOKEN": "l" * 32},
+        ):
+            with self.subTest(updates=tuple(updates)):
+                env = dict(GOOD_ENV)
+                env.update(updates)
+                report = preflight.run_preflight(self.make_root(), env)
+                self.assertEqual(report["status"], "error")
+
     def test_rejects_node_or_wrong_docker_entrypoint(self):
         for dockerfile in (
             'FROM node:20\nCMD ["node", "bot.py"]\n',
@@ -122,7 +135,7 @@ class CandidatePreflightTests(unittest.TestCase):
 
     def test_cli_output_never_prints_secrets(self):
         env = dict(GOOD_ENV)
-        env["TEMLI_STORAGE_TOKEN"] = "TOP-SECRET-STORAGE-TOKEN"
+        env["TEMLI_STORAGE_APP_TOKEN"] = "TOP-SECRET-STORAGE-TOKEN"
         env["SCHEDULE_BOT_TOKEN"] = "TOP-SECRET-BOT-TOKEN"
         output = io.StringIO()
         with patch.dict("os.environ", env, clear=True), redirect_stdout(output):
