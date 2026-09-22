@@ -491,7 +491,8 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     @app.get("/health")
     def health():
         return jsonify(status="ok", service="temli-storage", schema=1,
-                       capabilities=['json', 'files-v1', 'payment-tx-v1', 'backup-v2'])
+                       capabilities=['json', 'json-batch-v1', 'files-v1',
+                                     'payment-tx-v1', 'backup-v2'])
 
     @app.post('/v1/files/read')
     def file_read():
@@ -701,6 +702,34 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
             except (OSError, json.JSONDecodeError):
                 return jsonify(status="error", code="corrupt_json"), 503
             return jsonify(status="ok", exists=True, data=value, version=version_for(value))
+
+    @app.post("/v1/json/read-batch")
+    def read_json_batch():
+        body = request.get_json(silent=True)
+        raw_paths = body.get("paths") if isinstance(body, dict) else None
+        if (not isinstance(raw_paths, list) or not 1 <= len(raw_paths) <= 16
+                or len(set(map(str, raw_paths))) != len(raw_paths)):
+            return jsonify(status="error", code="invalid_batch"), 400
+        try:
+            paths = [(str(raw), _safe_json_path(root, raw)) for raw in raw_paths]
+        except StorageServiceError as error:
+            return jsonify(status="error", code=str(error)), 400
+        items = {}
+        with lock:
+            for relative, path in paths:
+                if not path.exists():
+                    items[relative] = {"exists": False, "data": None, "version": None}
+                    continue
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    return jsonify(status="error", code="corrupt_json"), 503
+                items[relative] = {
+                    "exists": True,
+                    "data": value,
+                    "version": version_for(value),
+                }
+        return jsonify(status="ok", items=items)
 
     @app.post("/v1/json/write")
     def write_json():
