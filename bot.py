@@ -63,6 +63,12 @@ from openpyxl.styles import Font, Alignment, Border, Side
 from persistent_storage import resolve_storage_root
 from remote_storage import RemoteStorageError, configured_remote_storage
 from calendar_undo import CalendarUndo
+from consent_ledger import (
+    ConsentConfigurationError, ConsentLedgerError, DOCUMENT_TYPES,
+    append_events as append_consent_events, document_config as consent_document_config,
+    ledger_hmac_key as consent_ledger_hmac_key,
+    status as consent_ledger_status,
+)
 
 CALENDAR_UNDO = CalendarUndo()
 
@@ -139,12 +145,14 @@ MAX_REQUEST_BYTES = _bounded_env_int(
 MAX_IMAGE_PIXELS = _bounded_env_int(
     "TEMLI_MAX_IMAGE_PIXELS", 20_000_000, 1_000_000, 40_000_000
 )
+CONSENT_ENFORCEMENT = os.getenv("TEMLI_CONSENT_ENFORCEMENT", "false").strip().lower() == "true"
 RECEIPT_ASSETS_DIR = project_path("receipt_assets")
 BOOK_FILE = project_path("book.xlsx")
 FONT_REGULAR = os.path.join(CODE_DIR, "DejaVuSansCondensed.ttf")
 FONT_BOLD = os.path.join(CODE_DIR, "DejaVuSansCondensed-Bold.ttf")
 TENANT_DATA_DIR = project_path("teacher_data")
 TENANT_REGISTRY_FILE = project_path("teacher_registry.json")
+CONSENT_LEDGER_FILE = project_path("consent_ledger.json")
 TEACHER_CONTEXT = contextvars.ContextVar("schedule_teacher_id", default="")
 PAYMENT_TRANSACTION = contextvars.ContextVar("schedule_payment_transaction", default=None)
 REMOTE_REQUEST_CACHE = contextvars.ContextVar("schedule_remote_request_cache", default=None)
@@ -459,6 +467,33 @@ def tenant_root(teacher_id=None):
 def tenant_file(filename, teacher_id=None):
     root = tenant_root(teacher_id)
     return filename if root == BASE_DIR else os.path.join(root, os.path.basename(filename))
+
+
+def current_consent_ledger_file():
+    return tenant_file(CONSENT_LEDGER_FILE)
+
+
+def configured_consent_documents():
+    return consent_document_config(os.environ)
+
+
+def current_consent_status():
+    documents = configured_consent_documents()
+    integrity_key = consent_ledger_hmac_key(os.environ)
+    raw = _load_json_raw(current_consent_ledger_file(), {})
+    return consent_ledger_status(raw, int(current_teacher_id()), documents, integrity_key)
+
+
+def record_consent_action(kinds, action):
+    documents = configured_consent_documents()
+    integrity_key = consent_ledger_hmac_key(os.environ)
+    with DATA_LOCK:
+        path = current_consent_ledger_file()
+        ledger = append_consent_events(
+            _load_json_raw(path, {}), int(current_teacher_id()), documents, integrity_key, kinds, action
+        )
+        _save_json_raw(path, ledger)
+    return consent_ledger_status(ledger, int(current_teacher_id()), documents, integrity_key)
 
 
 def current_book_file():
@@ -1431,6 +1466,16 @@ def protect_api():
     ensure_teacher_registered(teacher_id, user or {})
     g.teacher_context_token = TEACHER_CONTEXT.set(teacher_id)
     g.teacher_id = teacher_id
+    consent_paths = {"/api/consent/status", "/api/consent/accept", "/api/consent/revoke"}
+    if CONSENT_ENFORCEMENT and not ALLOW_UNAUTHENTICATED and request.path not in consent_paths:
+        try:
+            consent = current_consent_status()
+        except ConsentConfigurationError:
+            return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+        except ConsentLedgerError:
+            return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+        if not consent["ready"]:
+            return jsonify({"status": "error", "code": "consent_required", **consent}), 428
     recover_payment_transaction()
     return None
 
@@ -2080,6 +2125,51 @@ def export_week_pdf():
                 os.remove(temp_path)
             except OSError:
                 pass
+
+
+def _requested_consent_documents():
+    payload = request.get_json(silent=True)
+    requested = payload.get("documents") if isinstance(payload, dict) else None
+    if not isinstance(requested, list) or not requested:
+        return None
+    normalized = list(dict.fromkeys(str(item) for item in requested))
+    return normalized if all(item in DOCUMENT_TYPES for item in normalized) else None
+
+
+@flask_app.route("/api/consent/status", methods=["GET"])
+def get_consent_status():
+    try:
+        return jsonify({"status": "ok", **current_consent_status()})
+    except ConsentConfigurationError:
+        return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+    except ConsentLedgerError:
+        return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+
+
+@flask_app.route("/api/consent/accept", methods=["POST"])
+def accept_current_documents():
+    requested = _requested_consent_documents()
+    if requested is None:
+        return jsonify({"status": "error", "code": "invalid_consent_documents"}), 400
+    try:
+        return jsonify({"status": "ok", **record_consent_action(requested, "accepted")})
+    except ConsentConfigurationError:
+        return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+    except ConsentLedgerError:
+        return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+
+
+@flask_app.route("/api/consent/revoke", methods=["POST"])
+def revoke_current_documents():
+    requested = _requested_consent_documents()
+    if requested is None:
+        return jsonify({"status": "error", "code": "invalid_consent_documents"}), 400
+    try:
+        return jsonify({"status": "ok", **record_consent_action(requested, "revoked")})
+    except ConsentConfigurationError:
+        return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+    except ConsentLedgerError:
+        return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
 
 
 @flask_app.route("/api/health", methods=["GET"])

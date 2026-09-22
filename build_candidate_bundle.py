@@ -26,6 +26,7 @@ RELEASE_FILES = (
     "backup_replica.py",
     "bot.py",
     "calendar_undo.py",
+    "consent_ledger.py",
     "help.js",
     "i18n.js",
     "index.html",
