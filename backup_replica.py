@@ -16,6 +16,8 @@ BACKUP_NAME = re.compile(r"temli-\d{8}T\d{6}\d*Z-[a-z0-9-]+\.zip")
 MAX_ARCHIVE_BYTES = 160 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 _RUN_LOCK = threading.Lock()
+BACKUP_ENVELOPE_MAGIC = b"TEMLIBK1"
+BACKUP_ENVELOPE_MIN_BYTES = len(BACKUP_ENVELOPE_MAGIC) + 12 + 16
 
 
 class ReplicaError(RuntimeError):
@@ -57,12 +59,21 @@ def replica_settings(environ=None):
 
 
 def verify_archive(raw, expected_sha256=None):
-    """Verify the outer digest and every member declared by the ZIP manifest."""
+    """Verify an archive for replication without requiring its decryption key.
+
+    The storage service authenticates encrypted archives before listing them;
+    this replica independently pins the exact ciphertext digest it received.
+    Plain legacy ZIPs still receive full manifest/member verification.
+    """
     if not isinstance(raw, bytes) or not raw or len(raw) > MAX_ARCHIVE_BYTES:
         raise ReplicaError("invalid_backup_size")
     digest = hashlib.sha256(raw).hexdigest()
     if expected_sha256 and digest != expected_sha256:
         raise ReplicaError("backup_checksum_mismatch")
+    if raw.startswith(BACKUP_ENVELOPE_MAGIC):
+        if len(raw) < BACKUP_ENVELOPE_MIN_BYTES:
+            raise ReplicaError("invalid_backup")
+        return digest, {"encrypted": True}
     try:
         import io
         with zipfile.ZipFile(io.BytesIO(raw), "r") as archive:

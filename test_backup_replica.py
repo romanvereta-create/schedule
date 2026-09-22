@@ -8,6 +8,7 @@ from pathlib import Path
 
 from backup_replica import (ReplicaError, configured_replica_dir, replicate_once,
                             replica_settings, replica_status, verify_archive)
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 def archive_bytes(value=b'{}'):
@@ -86,6 +87,20 @@ class BackupReplicaTests(unittest.TestCase):
             archive.writestr("data/students.json", b'{}')
         with self.assertRaisesRegex(ReplicaError, "invalid_backup"):
             verify_archive(buffer.getvalue())
+
+    def test_replicates_opaque_encrypted_archive_by_pinned_digest(self):
+        nonce = b'n' * 12
+        encrypted = b'TEMLIBK1' + nonce + AESGCM(b'k' * 32).encrypt(
+            nonce, archive_bytes(), b'archive.zip')
+        digest, metadata = verify_archive(
+            encrypted, hashlib.sha256(encrypted).hexdigest())
+        self.assertEqual(digest, hashlib.sha256(encrypted).hexdigest())
+        self.assertTrue(metadata['encrypted'])
+        with tempfile.TemporaryDirectory() as temporary:
+            name = 'temli-20260922T030000000000Z-automatic.zip'
+            result = replicate_once(FakeRemote({name: encrypted}), temporary)
+            self.assertEqual(result['downloaded'], 1)
+            self.assertEqual((Path(temporary) / name).read_bytes(), encrypted)
 
     def test_invalid_remote_metadata_writes_nothing(self):
         class InvalidRemote:
