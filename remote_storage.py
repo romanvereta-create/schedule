@@ -12,6 +12,8 @@ import hashlib
 import os
 import ssl
 import threading
+import time
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import PurePosixPath
@@ -164,6 +166,62 @@ class RemoteJsonStorage:
         with self._lock:
             self._file_versions[path] = None
         return bool(result.get('existed'))
+
+    def commit_payment_transaction(self, json_files, binary_files=None, *, transaction_id=None):
+        """Atomically commit payment-related JSON and XLSX files on the server."""
+        binary_files = {} if binary_files is None else binary_files
+        transaction_id = transaction_id or ('payment-' + uuid.uuid4().hex)
+        items = []
+        with self._lock:
+            for raw_path, data in json_files.items():
+                path = _clean_relative_path(raw_path)
+                if path not in self._versions:
+                    raise RemoteStorageError('read_json_before_transaction')
+                items.append({
+                    'path': path, 'kind': 'json', 'data': data,
+                    'expected_version': self._versions[path],
+                })
+            for raw_path, raw in binary_files.items():
+                path = _clean_relative_path(raw_path)
+                if path not in self._file_versions:
+                    raise RemoteStorageError('read_file_before_transaction')
+                if not isinstance(raw, bytes) or not raw or len(raw) > 8 * 1024 * 1024:
+                    raise RemoteStorageError('invalid_file_size')
+                items.append({
+                    'path': path, 'kind': 'binary',
+                    'data': base64.b64encode(raw).decode('ascii'),
+                    'expected_version': self._file_versions[path],
+                })
+        payload = {'transaction_id': transaction_id, 'items': items}
+        result = None
+        for attempt in range(3):
+            try:
+                result = self._request('/v1/transactions/payment', payload)
+                break
+            except RemoteStorageError as exc:
+                if isinstance(exc, RemoteStorageConflict) or str(exc) != 'storage_unavailable' or attempt == 2:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
+        versions = result.get('versions') if isinstance(result, dict) else None
+        if not isinstance(versions, dict):
+            raise RemoteStorageError('invalid_storage_response')
+        with self._lock:
+            for raw_path in json_files:
+                path = _clean_relative_path(raw_path)
+                if versions.get(path) != version_for_client(json_files[raw_path]):
+                    raise RemoteStorageError('transaction_checksum_mismatch')
+                self._versions[path] = versions[path]
+            for raw_path, raw in binary_files.items():
+                path = _clean_relative_path(raw_path)
+                if versions.get(path) != hashlib.sha256(raw).hexdigest():
+                    raise RemoteStorageError('transaction_checksum_mismatch')
+                self._file_versions[path] = versions[path]
+        return transaction_id
+
+
+def version_for_client(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
 
 
 def configured_remote_storage(environ=None):

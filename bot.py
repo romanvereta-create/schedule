@@ -39,6 +39,7 @@ import tempfile
 import threading
 import time
 import shutil
+import uuid
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import parse_qsl
@@ -102,6 +103,7 @@ FONT_BOLD = os.path.join(CODE_DIR, "DejaVuSansCondensed-Bold.ttf")
 TENANT_DATA_DIR = project_path("teacher_data")
 TENANT_REGISTRY_FILE = project_path("teacher_registry.json")
 TEACHER_CONTEXT = contextvars.ContextVar("schedule_teacher_id", default="")
+PAYMENT_TRANSACTION = contextvars.ContextVar("schedule_payment_transaction", default=None)
 
 BOT_APPLICATION = None
 BOT_LOOP = None
@@ -179,7 +181,10 @@ def _load_json_raw(filename, default=None):
     with DATA_LOCK:
         if REMOTE_STORAGE:
             try:
-                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR)
+                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR).replace(os.sep, "/")
+                transaction = PAYMENT_TRANSACTION.get()
+                if transaction is not None and relative in transaction["json"]:
+                    return copy.deepcopy(transaction["json"][relative])
                 return REMOTE_STORAGE.read_json(relative, default)
             except RemoteStorageError as exc:
                 raise DataCorruptionError(
@@ -201,7 +206,11 @@ def _save_json_raw(filename, data):
     if REMOTE_STORAGE:
         with DATA_LOCK:
             try:
-                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR)
+                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR).replace(os.sep, "/")
+                transaction = PAYMENT_TRANSACTION.get()
+                if transaction is not None:
+                    transaction["json"][relative] = copy.deepcopy(data)
+                    return
                 REMOTE_STORAGE.write_json(relative, data)
                 return
             except RemoteStorageError as exc:
@@ -875,11 +884,26 @@ def generate_receipt_pdf(settings, client_name, amount, lesson_id, receipt_numbe
 
 @serialized_data
 def init_book():
-    if REMOTE_STORAGE:
-        return
     book_file = current_book_file()
-    if os.path.exists(book_file):
+    if REMOTE_STORAGE:
+        transaction = PAYMENT_TRANSACTION.get()
+        if (transaction is not None and transaction.get("book_loaded")
+                and os.path.exists(book_file)):
+            return
+        try:
+            raw = REMOTE_STORAGE.read_file(_remote_relative_path(book_file))
+        except RemoteStorageError as exc:
+            raise DataCorruptionError(
+                f"Не удалось прочитать книгу из удалённого хранилища ({exc})."
+            ) from exc
+        if raw is not None:
+            _atomic_local_bytes(book_file, raw)
+            if transaction is not None:
+                transaction["book_loaded"] = True
+            return
+    elif os.path.exists(book_file):
         return
+    os.makedirs(os.path.dirname(book_file), exist_ok=True)
     wb = openpyxl.Workbook()
     try:
         ws = wb.active
@@ -906,10 +930,15 @@ def init_book():
                 os.remove(temporary)
     finally:
         wb.close()
+    if REMOTE_STORAGE and transaction is not None:
+        transaction["book_loaded"] = True
 
 
 def add_receipt_to_book(client_name, amount, receipt_number, created_at, status="Оплачено"):
     with DATA_LOCK:
+        transaction = PAYMENT_TRANSACTION.get()
+        if REMOTE_STORAGE and transaction is None:
+            raise RuntimeError("Удалённая книга изменяется только внутри платёжной транзакции.")
         init_book()
         book_file = current_book_file()
         # Загружаем книгу из памяти, чтобы openpyxl/ZipFile не удерживал блокировку
@@ -935,6 +964,8 @@ def add_receipt_to_book(client_name, amount, receipt_number, created_at, status=
             finally:
                 wb.close()
             os.replace(temp_book, book_file)
+            if transaction is not None:
+                transaction["book_changed"] = True
         finally:
             if os.path.exists(temp_book):
                 os.remove(temp_book)
@@ -978,6 +1009,9 @@ def _cleanup_payment_transaction(paths):
 
 def recover_payment_transaction():
     """Recover a payment interrupted between schedule.json and book.xlsx writes."""
+    if REMOTE_STORAGE:
+        # The Russian storage service recovers prepared commits before serving.
+        return False
     paths = payment_transaction_paths()
     marker_path = paths["marker"]
     with DATA_LOCK:
@@ -1014,7 +1048,29 @@ def recover_payment_transaction():
 def payment_files_transaction():
     """Atomically coordinate schedule and book writes with crash recovery."""
     if REMOTE_STORAGE:
-        raise RuntimeError("Оплаты отключены до подключения удалённого бинарного хранилища.")
+        with DATA_LOCK:
+            transaction = {"json": {}, "book_changed": False, "book_loaded": False}
+            token = PAYMENT_TRANSACTION.set(transaction)
+            try:
+                yield
+                if not transaction["json"]:
+                    raise RuntimeError("Платёжная транзакция не содержит JSON-изменений.")
+                binary = {}
+                if transaction["book_changed"]:
+                    book_file = current_book_file()
+                    with open(book_file, "rb") as source:
+                        binary[_remote_relative_path(book_file)] = source.read()
+                REMOTE_STORAGE.commit_payment_transaction(
+                    transaction["json"], binary,
+                    transaction_id="payment-" + uuid.uuid4().hex,
+                )
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Не удалось атомарно сохранить оплату ({exc})."
+                ) from exc
+            finally:
+                PAYMENT_TRANSACTION.reset(token)
+        return
     with DATA_LOCK:
         recover_payment_transaction()
         paths = payment_transaction_paths()
@@ -1735,11 +1791,6 @@ def build_week_schedule_pdf(start_date, week_data):
 
 @flask_app.route("/api/download_book", methods=["GET"])
 def download_book():
-    if REMOTE_STORAGE:
-        return jsonify({
-            "status": "error",
-            "message": "Книга учёта временно отключена на тестовом стенде удалённого хранения.",
-        }), 503
     request_user = getattr(g, "telegram_user", {}) or {}
     teacher_target = str(getattr(g, "teacher_id", "") or request_user.get("id", "")).strip()
     teacher_chat_id = numeric_telegram_chat_id(teacher_target)
