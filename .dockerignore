@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+*.zip
+.env
+.release-venv
+.venv-storage-check
