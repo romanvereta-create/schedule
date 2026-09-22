@@ -62,6 +62,27 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(client.get("/app/bot.py").status_code, 404)
         self.assertEqual(client.get("/app/../bot.py").status_code, 404)
 
+    def test_readiness_checks_authenticated_remote_storage(self):
+        class ReadyStorage:
+            def status(self):
+                return {
+                    "service": "temli-storage",
+                    "backup": {"count": 3, "latest_age_seconds": 120},
+                }
+
+        client = bot.flask_app.test_client()
+        with patch.object(bot, "REMOTE_STORAGE", ReadyStorage()):
+            bot.READINESS_CACHE.update(
+                expires_at=0.0, status_code=503, payload=None
+            )
+            response = client.get("/api/ready")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["storage"], "ok")
+        self.assertEqual(payload["backup_count"], 3)
+        self.assertEqual(payload["latest_backup_age_seconds"], 120)
+
     def test_recovery_marker_removed_while_waiting_is_not_corruption(self):
         with bot.teacher_scope("audit"):
             marker = Path(bot.payment_transaction_paths()["marker"])

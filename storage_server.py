@@ -492,7 +492,36 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     def health():
         return jsonify(status="ok", service="temli-storage", schema=1,
                        capabilities=['json', 'json-batch-v1', 'files-v1',
-                                     'payment-tx-v1', 'backup-v2'])
+                                     'payment-tx-v1', 'backup-v2',
+                                     'authenticated-status-v1'])
+
+    @app.post("/v1/status")
+    def authenticated_status():
+        with lock:
+            try:
+                validate_root(root)
+                archives = sorted(
+                    (path for path in backups.glob("temli-*.zip")
+                     if BACKUP_NAME_RE.fullmatch(path.name)),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                latest = archives[0] if archives else None
+                latest_age = None
+                if latest is not None:
+                    latest_age = max(0, int(
+                        datetime.now(timezone.utc).timestamp() - latest.stat().st_mtime
+                    ))
+            except (OSError, StorageServiceError):
+                return jsonify(status="error", code="storage_not_ready"), 503
+        return jsonify(
+            status="ok",
+            service="temli-storage",
+            backup={
+                "count": len(archives),
+                "latest_age_seconds": latest_age,
+            },
+        )
 
     @app.post('/v1/files/read')
     def file_read():

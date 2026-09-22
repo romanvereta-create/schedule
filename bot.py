@@ -105,6 +105,8 @@ TENANT_REGISTRY_FILE = project_path("teacher_registry.json")
 TEACHER_CONTEXT = contextvars.ContextVar("schedule_teacher_id", default="")
 PAYMENT_TRANSACTION = contextvars.ContextVar("schedule_payment_transaction", default=None)
 REMOTE_REQUEST_CACHE = contextvars.ContextVar("schedule_remote_request_cache", default=None)
+READINESS_LOCK = threading.Lock()
+READINESS_CACHE = {"expires_at": 0.0, "status_code": 503, "payload": None}
 
 BOT_APPLICATION = None
 BOT_LOOP = None
@@ -1281,7 +1283,7 @@ def handle_data_corruption(error):
 
 @flask_app.before_request
 def protect_api():
-    if request.method == "OPTIONS" or request.path == "/api/health":
+    if request.method == "OPTIONS" or request.path in {"/api/health", "/api/ready"}:
         return None
     if not request.path.startswith("/api/"):
         return None
@@ -1965,8 +1967,50 @@ def health():
         "status": "ok",
         "message": "API работает",
         "storage": "remote-json-test" if REMOTE_STORAGE else "local",
-        "capabilities": ["request-json-cache-v1", "bootstrap-v1", "self-hosted-frontend-v1"],
+        "capabilities": ["request-json-cache-v1", "bootstrap-v1",
+                         "self-hosted-frontend-v1", "readiness-v1"],
     })
+
+
+@flask_app.route("/api/ready", methods=["GET"])
+def ready():
+    """Cached dependency check suitable for an external uptime monitor."""
+    now = time.monotonic()
+    with READINESS_LOCK:
+        if READINESS_CACHE["payload"] is not None and now < READINESS_CACHE["expires_at"]:
+            return jsonify(READINESS_CACHE["payload"]), READINESS_CACHE["status_code"]
+        started = time.monotonic()
+        try:
+            if REMOTE_STORAGE:
+                remote = REMOTE_STORAGE.status()
+                backup = remote["backup"]
+                payload = {
+                    "status": "ok",
+                    "service": "temli-bot3",
+                    "storage": "ok",
+                    "storage_latency_ms": round((time.monotonic() - started) * 1000),
+                    "backup_count": int(backup.get("count", 0) or 0),
+                    "latest_backup_age_seconds": backup.get("latest_age_seconds"),
+                }
+            else:
+                payload = {
+                    "status": "ok", "service": "temli-bot3",
+                    "storage": "local", "storage_latency_ms": 0,
+                    "backup_count": None, "latest_backup_age_seconds": None,
+                }
+            status_code = 200
+        except (RemoteStorageError, TypeError, ValueError):
+            payload = {
+                "status": "error", "service": "temli-bot3",
+                "storage": "unavailable",
+            }
+            status_code = 503
+        READINESS_CACHE.update({
+            "expires_at": now + 30.0,
+            "status_code": status_code,
+            "payload": payload,
+        })
+        return jsonify(payload), status_code
 
 
 @flask_app.route("/api/get_week_schedule", methods=["POST"])

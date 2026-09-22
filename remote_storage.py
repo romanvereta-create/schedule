@@ -98,6 +98,17 @@ class RemoteJsonStorage:
             self._versions[path] = result.get("version")
         return result.get("data") if result.get("exists") else default
 
+    def status(self):
+        """Verify authenticated access without reading tenant data."""
+        result = self._request("/v1/status", {})
+        backup = result.get("backup")
+        if not isinstance(backup, dict):
+            raise RemoteStorageError("invalid_storage_response")
+        return {
+            "service": str(result.get("service", "")),
+            "backup": backup,
+        }
+
     def read_json_batch(self, defaults):
         """Read several JSON documents in one cross-region HTTP request."""
         if not isinstance(defaults, dict) or not 1 <= len(defaults) <= 16:

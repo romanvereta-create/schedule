@@ -77,6 +77,18 @@ class RemoteStorageServerTests(unittest.TestCase):
             "Тест",
         )
 
+    def test_authenticated_status_reports_backup_without_tenant_data(self):
+        self.assertEqual(self.post("/v1/status", {}, {}).status_code, 401)
+        empty = self.post("/v1/status", {})
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.get_json()["backup"]["count"], 0)
+        create_backup(self.root, self.backups, reason="manual")
+        ready = self.post("/v1/status", {}).get_json()
+        self.assertEqual(ready["status"], "ok")
+        self.assertEqual(ready["backup"]["count"], 1)
+        self.assertIsInstance(ready["backup"]["latest_age_seconds"], int)
+        self.assertNotIn("data", ready)
+
     def test_batch_json_read_and_real_client_versions(self):
         self.post("/v1/json/write", {"path": "schedule.json", "data": {"week": 1}})
         response = self.post("/v1/json/read-batch", {
@@ -93,6 +105,9 @@ class RemoteStorageServerTests(unittest.TestCase):
         try:
             with patch.dict(os.environ, TEMLI_STORAGE_ALLOW_HTTP='true'):
                 remote = RemoteJsonStorage('http://127.0.0.1:' + str(server.server_port), self.token)
+                remote_status = remote.status()
+                self.assertEqual(remote_status["service"], "temli-storage")
+                self.assertEqual(remote_status["backup"]["count"], 0)
                 values = remote.read_json_batch({"schedule.json": {}, "students.json": {"empty": True}})
                 self.assertEqual(values["schedule.json"], {"week": 1})
                 self.assertEqual(values["students.json"], {})
