@@ -82,12 +82,34 @@ class RemoteStorageServerTests(unittest.TestCase):
         empty = self.post("/v1/status", {})
         self.assertEqual(empty.status_code, 200)
         self.assertEqual(empty.get_json()["backup"]["count"], 0)
+        self.assertFalse(empty.get_json()["backup"]["latest_verified"])
         create_backup(self.root, self.backups, reason="manual")
         ready = self.post("/v1/status", {}).get_json()
         self.assertEqual(ready["status"], "ok")
         self.assertEqual(ready["backup"]["count"], 1)
         self.assertIsInstance(ready["backup"]["latest_age_seconds"], int)
+        self.assertTrue(ready["backup"]["latest_verified"])
         self.assertNotIn("data", ready)
+
+    def test_authenticated_status_rejects_a_corrupt_latest_backup_safely(self):
+        archive, _ = create_backup(self.root, self.backups, reason="manual")
+        archive.write_bytes(b"not a zip archive")
+
+        response = self.post("/v1/status", {})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json(), {
+            "status": "error",
+            "code": "backup_verification_failed",
+        })
+        self.assertNotIn(archive.name, response.get_data(as_text=True))
+
+    def test_authenticated_status_caches_verification_of_unchanged_backup(self):
+        create_backup(self.root, self.backups, reason="manual")
+        with patch("storage_server.inspect_backup", wraps=inspect_backup) as verify:
+            self.assertEqual(self.post("/v1/status", {}).status_code, 200)
+            self.assertEqual(self.post("/v1/status", {}).status_code, 200)
+        self.assertEqual(verify.call_count, 1)
 
     def test_batch_json_read_and_real_client_versions(self):
         self.post("/v1/json/write", {"path": "schedule.json", "data": {"week": 1}})

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import socket
 import sys
 import time
@@ -24,18 +25,21 @@ DEFAULT_BOT_BASE_URL = "https://bot-1789984567-3598-solo1986.bothost.tech"
 DEFAULT_STORAGE_BASE_URL = "https://bot-1789853066-7755-solo1986.bothost.tech"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_ATTEMPTS = 2
+MAX_BACKUP_AGE_SECONDS = 8 * 60 * 60
 
 BOT_CAPABILITIES = {
     "request-json-cache-v1",
     "bootstrap-v1",
     "self-hosted-frontend-v1",
     "readiness-v1",
+    "release-id-v1",
 }
 STORAGE_CAPABILITIES = {
     "json",
     "files-v1",
     "backup-v2",
     "authenticated-status-v1",
+    "backup-integrity-status-v1",
 }
 
 
@@ -85,7 +89,15 @@ def validate_bot_health(payload: dict[str, Any]) -> dict[str, Any]:
     _require_equal(payload, "status", "ok")
     _require_equal(payload, "storage", "remote-json-test")
     capabilities = _require_capabilities(payload, BOT_CAPABILITIES)
-    return {"status": "ok", "storage": "remote-json-test", "capabilities": capabilities}
+    release = payload.get("release")
+    if not isinstance(release, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", release):
+        raise CheckError("field 'release' must be a public release identifier")
+    return {
+        "status": "ok",
+        "storage": "remote-json-test",
+        "release": release,
+        "capabilities": capabilities,
+    }
 
 
 def validate_bot_ready(payload: dict[str, Any]) -> dict[str, Any]:
@@ -101,10 +113,22 @@ def validate_bot_ready(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(latency, bool) or not isinstance(latency, (int, float)) or latency < 0:
         raise CheckError("field 'storage_latency_ms' must be a non-negative number")
 
+    backup_age = payload.get("latest_backup_age_seconds")
+    if (
+        isinstance(backup_age, bool)
+        or not isinstance(backup_age, int)
+        or not 0 <= backup_age <= MAX_BACKUP_AGE_SECONDS
+    ):
+        raise CheckError("latest backup is missing or older than 8 hours")
+    if payload.get("latest_backup_verified") is not True:
+        raise CheckError("latest backup is not verified")
+
     return {
         "status": "ok",
         "storage": "ok",
         "backup_count": backup_count,
+        "latest_backup_age_seconds": backup_age,
+        "latest_backup_verified": True,
         "storage_latency_ms": latency,
     }
 
@@ -248,5 +272,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-

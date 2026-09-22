@@ -12,6 +12,7 @@ GOOD_RESPONSES = {
     "/api/health": {
         "status": "ok",
         "storage": "remote-json-test",
+        "release": "bot3-test-release",
         "capabilities": sorted(smoke.BOT_CAPABILITIES),
     },
     "/api/ready": {
@@ -21,6 +22,7 @@ GOOD_RESPONSES = {
         "storage_latency_ms": 249,
         "backup_count": 12,
         "latest_backup_age_seconds": 786,
+        "latest_backup_verified": True,
     },
     "/health": {
         "status": "ok",
@@ -72,6 +74,9 @@ class PostDeployCheckTests(unittest.TestCase):
             {"backup_count": 0},
             {"backup_count": True},
             {"storage_latency_ms": -1},
+            {"latest_backup_age_seconds": -1},
+            {"latest_backup_age_seconds": smoke.MAX_BACKUP_AGE_SECONDS + 1},
+            {"latest_backup_verified": False},
         ):
             with self.subTest(changed=changed):
                 payload = GOOD_RESPONSES["/api/ready"].copy()
@@ -144,5 +149,3 @@ class PostDeployCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

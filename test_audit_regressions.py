@@ -54,6 +54,7 @@ class AuditRegressionTests(unittest.TestCase):
         index = client.get("/app/")
         self.assertEqual(index.status_code, 200)
         self.assertIn(b'id="startup-status"', index.data)
+        self.assertIn(b'id="startup-release"', index.data)
         self.assertEqual(index.headers.get("Cache-Control"), "no-store")
         app_script = client.get("/app/app.js")
         self.assertEqual(app_script.status_code, 200)
@@ -62,12 +63,33 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(client.get("/app/bot.py").status_code, 404)
         self.assertEqual(client.get("/app/../bot.py").status_code, 404)
 
+    def test_health_exposes_only_public_release_identifier(self):
+        response = bot.flask_app.test_client().get("/api/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["release"], bot.BOT3_RELEASE_ID)
+        self.assertRegex(payload["release"], r"^[A-Za-z0-9._-]{1,64}$")
+        self.assertIn("release-id-v1", payload["capabilities"])
+        startup = bot.flask_app.test_client().get("/app/startup.js")
+        self.assertIn(b"health.release", startup.data)
+
+    def test_release_env_override_is_validated(self):
+        with patch.dict(os.environ, {"TEMLI_RELEASE_ID": "bot3-2026.09.22"}):
+            self.assertEqual(bot.resolve_public_release_id(), "bot3-2026.09.22")
+        with patch.dict(os.environ, {"TEMLI_RELEASE_ID": "secret value with spaces"}):
+            generated = bot.resolve_public_release_id()
+        self.assertRegex(generated, r"^bot3-[0-9a-f]{12}$")
+
     def test_readiness_checks_authenticated_remote_storage(self):
         class ReadyStorage:
             def status(self):
                 return {
                     "service": "temli-storage",
-                    "backup": {"count": 3, "latest_age_seconds": 120},
+                    "backup": {
+                        "count": 3,
+                        "latest_age_seconds": 120,
+                        "latest_verified": True,
+                    },
                 }
 
         client = bot.flask_app.test_client()
@@ -82,6 +104,7 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(payload["storage"], "ok")
         self.assertEqual(payload["backup_count"], 3)
         self.assertEqual(payload["latest_backup_age_seconds"], 120)
+        self.assertTrue(payload["latest_backup_verified"])
 
     def test_recovery_marker_removed_while_waiting_is_not_corruption(self):
         with bot.teacher_scope("audit"):

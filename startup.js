@@ -9,8 +9,29 @@
     const title = document.getElementById('startup-status-title');
     const message = document.getElementById('startup-status-message');
     const retry = document.getElementById('startup-status-retry');
+    const releaseLabel = document.getElementById('startup-release');
     let starting = false;
     let appScriptsStarted = false;
+
+    function showRelease(release) {
+        const safeRelease = String(release || '').trim();
+        if (!safeRelease) return;
+        window.TEMLI_RELEASE_ID = safeRelease;
+        if (releaseLabel) releaseLabel.textContent = `Релиз: ${safeRelease}`;
+        const settingsVersion = document.getElementById('settings-build-version');
+        if (settingsVersion) settingsVersion.textContent = `TEMLI ${window.TEMLI_I18N?.VERSION || '—'} · ${safeRelease}`;
+    }
+
+    async function loadRelease() {
+        try {
+            const response = await fetch('/api/health', { cache: 'no-store' });
+            if (!response.ok) return;
+            const health = await response.json();
+            showRelease(health.release);
+        } catch (error) {
+            console.warn('Не удалось определить релиз TEMLI:', error);
+        }
+    }
 
     function showStatus(nextTitle, nextMessage, canRetry = false) {
         status.classList.remove('hidden');
@@ -85,6 +106,8 @@
         starting = true;
         retry.disabled = true;
         showStatus('TEMLI', 'Загрузка приложения…');
+        // Release diagnostics must never delay opening the application.
+        void loadRelease();
 
         try {
             await ensureTelegramSdk();
@@ -117,6 +140,7 @@
             await loadScript('personal_notifications.js?v=1.0.0');
             await loadScript('help.js?v=1.0.0');
             await loadScript('support.js?v=1.0.0');
+            showRelease(window.TEMLI_RELEASE_ID);
             hideStatus();
         } catch (error) {
             console.error('Не удалось загрузить TEMLI:', error);

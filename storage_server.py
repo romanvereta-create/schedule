@@ -475,6 +475,9 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     app.extensions["temli_storage_lock"] = lock
     app.extensions["temli_backup_root"] = backups
     app.extensions["temli_backup_retention"] = backup_retention
+    # Backup archives are immutable after atomic creation. Cache the last
+    # verified signature so frequent readiness probes do not reread the ZIP.
+    backup_verification_cache = {"signature": None}
 
     @app.before_request
     def authenticate():
@@ -493,7 +496,8 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
         return jsonify(status="ok", service="temli-storage", schema=1,
                        capabilities=['json', 'json-batch-v1', 'files-v1',
                                      'payment-tx-v1', 'backup-v2',
-                                     'authenticated-status-v1'])
+                                     'authenticated-status-v1',
+                                     'backup-integrity-status-v1'])
 
     @app.post("/v1/status")
     def authenticated_status():
@@ -508,18 +512,34 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
                 )
                 latest = archives[0] if archives else None
                 latest_age = None
-                if latest is not None:
-                    latest_age = max(0, int(
-                        datetime.now(timezone.utc).timestamp() - latest.stat().st_mtime
-                    ))
+                latest_verified = False
             except (OSError, StorageServiceError):
                 return jsonify(status="error", code="storage_not_ready"), 503
+            if latest is not None:
+                try:
+                    latest_stat = latest.stat()
+                    latest_age = max(0, int(
+                        datetime.now(timezone.utc).timestamp() - latest_stat.st_mtime
+                    ))
+                    signature = (
+                        str(latest), latest_stat.st_dev, latest_stat.st_ino,
+                        latest_stat.st_size, latest_stat.st_mtime_ns,
+                    )
+                    if backup_verification_cache["signature"] != signature:
+                        inspect_backup(latest)
+                        backup_verification_cache["signature"] = signature
+                    latest_verified = True
+                except (OSError, StorageServiceError):
+                    return jsonify(
+                        status="error", code="backup_verification_failed",
+                    ), 503
         return jsonify(
             status="ok",
             service="temli-storage",
             backup={
                 "count": len(archives),
                 "latest_age_seconds": latest_age,
+                "latest_verified": latest_verified,
             },
         )
 

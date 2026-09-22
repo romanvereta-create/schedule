@@ -65,6 +65,28 @@ from calendar_undo import CalendarUndo
 CALENDAR_UNDO = CalendarUndo()
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_public_release_id():
+    """Return a non-secret identifier for the code currently serving Bot3."""
+    configured = os.getenv("TEMLI_RELEASE_ID", "").strip()
+    if configured and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", configured):
+        return configured
+
+    digest = hashlib.sha256()
+    for filename in ("bot.py", "index.html", "startup.js", "app.js", "ux.js"):
+        path = os.path.join(CODE_DIR, filename)
+        try:
+            with open(path, "rb") as source:
+                digest.update(filename.encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(source.read())
+        except OSError:
+            continue
+    return f"bot3-{digest.hexdigest()[:12]}"
+
+
+BOT3_RELEASE_ID = resolve_public_release_id()
 # BASE_DIR remains the data root for tenant helpers and personal-bot modules.
 REMOTE_STORAGE = configured_remote_storage()
 if REMOTE_STORAGE:
@@ -1966,9 +1988,11 @@ def health():
     return jsonify({
         "status": "ok",
         "message": "API работает",
+        "release": BOT3_RELEASE_ID,
         "storage": "remote-json-test" if REMOTE_STORAGE else "local",
         "capabilities": ["request-json-cache-v1", "bootstrap-v1",
-                         "self-hosted-frontend-v1", "readiness-v1"],
+                         "self-hosted-frontend-v1", "readiness-v1",
+                         "release-id-v1"],
     })
 
 
@@ -1984,6 +2008,8 @@ def ready():
             if REMOTE_STORAGE:
                 remote = REMOTE_STORAGE.status()
                 backup = remote["backup"]
+                if backup.get("latest_verified") is not True:
+                    raise ValueError("latest backup is not verified")
                 payload = {
                     "status": "ok",
                     "service": "temli-bot3",
@@ -1991,12 +2017,14 @@ def ready():
                     "storage_latency_ms": round((time.monotonic() - started) * 1000),
                     "backup_count": int(backup.get("count", 0) or 0),
                     "latest_backup_age_seconds": backup.get("latest_age_seconds"),
+                    "latest_backup_verified": True,
                 }
             else:
                 payload = {
                     "status": "ok", "service": "temli-bot3",
                     "storage": "local", "storage_latency_ms": 0,
                     "backup_count": None, "latest_backup_age_seconds": None,
+                    "latest_backup_verified": None,
                 }
             status_code = 200
         except (RemoteStorageError, TypeError, ValueError):
