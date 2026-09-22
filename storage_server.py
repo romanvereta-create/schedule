@@ -445,6 +445,27 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
         except (StorageServiceError, ValueError, TypeError, binascii.Error):
             return jsonify(status='error', code='invalid_file_request'), 400
 
+    @app.post('/v1/files/delete')
+    def file_delete():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify(status='error', code='invalid_request'), 400
+        try:
+            path = _safe_binary_path(root, body.get('path'))
+            if 'expected_version' not in body:
+                return jsonify(status='error', code='expected_version_required'), 400
+            with lock:
+                existed = path.exists()
+                actual = _file_sha256(path) if existed else None
+                if body['expected_version'] != actual:
+                    return jsonify(status='error', code='version_conflict'), 409
+                if existed:
+                    _atomic_bytes(Path(str(path) + '.bak'), path.read_bytes())
+                    path.unlink()
+                return jsonify(status='ok', existed=existed, version=None)
+        except (StorageServiceError, OSError):
+            return jsonify(status='error', code='invalid_file_request'), 400
+
     @app.post("/v1/json/read")
     def read_json():
         body = request.get_json(silent=True) or {}
