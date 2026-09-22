@@ -50,7 +50,7 @@ else:
     import fcntl
 
 import pytz
-from flask import Flask, jsonify, request, send_file, g
+from flask import Flask, jsonify, request, send_file, send_from_directory, g
 from flask_cors import CORS
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -104,6 +104,7 @@ TENANT_DATA_DIR = project_path("teacher_data")
 TENANT_REGISTRY_FILE = project_path("teacher_registry.json")
 TEACHER_CONTEXT = contextvars.ContextVar("schedule_teacher_id", default="")
 PAYMENT_TRANSACTION = contextvars.ContextVar("schedule_payment_transaction", default=None)
+REMOTE_REQUEST_CACHE = contextvars.ContextVar("schedule_remote_request_cache", default=None)
 
 BOT_APPLICATION = None
 BOT_LOOP = None
@@ -185,7 +186,13 @@ def _load_json_raw(filename, default=None):
                 transaction = PAYMENT_TRANSACTION.get()
                 if transaction is not None and relative in transaction["json"]:
                     return copy.deepcopy(transaction["json"][relative])
-                return REMOTE_STORAGE.read_json(relative, default)
+                cache = REMOTE_REQUEST_CACHE.get()
+                if cache is not None and relative in cache:
+                    return copy.deepcopy(cache[relative])
+                value = REMOTE_STORAGE.read_json(relative, default)
+                if cache is not None:
+                    cache[relative] = copy.deepcopy(value)
+                return value
             except RemoteStorageError as exc:
                 raise DataCorruptionError(
                     f"Не удалось прочитать удалённое хранилище ({exc})."
@@ -210,8 +217,14 @@ def _save_json_raw(filename, data):
                 transaction = PAYMENT_TRANSACTION.get()
                 if transaction is not None:
                     transaction["json"][relative] = copy.deepcopy(data)
+                    cache = REMOTE_REQUEST_CACHE.get()
+                    if cache is not None:
+                        cache[relative] = copy.deepcopy(data)
                     return
                 REMOTE_STORAGE.write_json(relative, data)
+                cache = REMOTE_REQUEST_CACHE.get()
+                if cache is not None:
+                    cache[relative] = copy.deepcopy(data)
                 return
             except RemoteStorageError as exc:
                 raise DataCorruptionError(
@@ -248,6 +261,30 @@ def _save_json_raw(filename, data):
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+
+def _prefetch_remote_json(files):
+    """Fill the current request cache using one storage round trip."""
+    if not REMOTE_STORAGE or not files:
+        return
+    cache = REMOTE_REQUEST_CACHE.get()
+    if cache is None:
+        return
+    missing = {}
+    for filename, default in files.items():
+        relative = _remote_relative_path(filename)
+        if relative not in cache:
+            missing[relative] = default
+    if not missing:
+        return
+    try:
+        values = REMOTE_STORAGE.read_json_batch(missing)
+    except RemoteStorageError as exc:
+        raise DataCorruptionError(
+            f"Не удалось прочитать удалённое хранилище ({exc})."
+        ) from exc
+    for relative, value in values.items():
+        cache[relative] = copy.deepcopy(value)
 
 
 def _safe_teacher_id(value):
@@ -1206,6 +1243,36 @@ CORS(
     methods=["GET", "POST", "OPTIONS"],
 )
 
+BOT3_FRONTEND_FILES = {
+    "app.js", "help.js", "i18n.js", "index.html", "personal_notifications.js",
+    "startup.js", "styles.css", "support.js", "ux.css", "ux.js",
+    "locales/en.js", "vendor/telegram-web-app.js",
+}
+
+
+def send_bot3_frontend_file(filename):
+    filename = str(filename or "")
+    if filename not in BOT3_FRONTEND_FILES:
+        return jsonify({"status": "error", "message": "Файл не найден."}), 404
+    response = send_from_directory(CODE_DIR, filename, conditional=True)
+    if filename == "index.html":
+        response.headers["Cache-Control"] = "no-store"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@flask_app.get("/app/")
+def bot3_webapp():
+    return send_bot3_frontend_file("index.html")
+
+
+@flask_app.get("/app/<path:filename>")
+def bot3_webapp_asset(filename):
+    return send_bot3_frontend_file(filename)
+
 
 @flask_app.errorhandler(DataCorruptionError)
 def handle_data_corruption(error):
@@ -1219,6 +1286,8 @@ def protect_api():
     if not request.path.startswith("/api/"):
         return None
 
+    g.remote_cache_token = REMOTE_REQUEST_CACHE.set({})
+
     ok, user = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
     if not ok:
         return jsonify({"status": "error", "message": "Недействительные данные Telegram WebApp."}), 401
@@ -1229,14 +1298,28 @@ def protect_api():
         teacher_id = str((user or {}).get("id", "")).strip()
     if not teacher_id:
         return jsonify({"status": "error", "message": "Не удалось определить преподавателя Telegram."}), 401
+    _prefetch_remote_json({
+        TENANT_REGISTRY_FILE: {},
+        os.path.join(BASE_DIR, "main_invite_visitors.json"): {},
+    })
     from invitation_channels import recipient_only
     if recipient_only(sys.modules[__name__], teacher_id):
         return jsonify(status='error', code='recipient_only'), 403
     ensure_teacher_registered(teacher_id, user or {})
-    TEACHER_CONTEXT.set(teacher_id)
+    g.teacher_context_token = TEACHER_CONTEXT.set(teacher_id)
     g.teacher_id = teacher_id
     recover_payment_transaction()
     return None
+
+
+@flask_app.teardown_request
+def clear_request_context(_error=None):
+    teacher_token = getattr(g, "teacher_context_token", None)
+    if teacher_token is not None:
+        TEACHER_CONTEXT.reset(teacher_token)
+    cache_token = getattr(g, "remote_cache_token", None)
+    if cache_token is not None:
+        REMOTE_REQUEST_CACHE.reset(cache_token)
 
 
 
@@ -1882,6 +1965,7 @@ def health():
         "status": "ok",
         "message": "API работает",
         "storage": "remote-json-test" if REMOTE_STORAGE else "local",
+        "capabilities": ["request-json-cache-v1", "bootstrap-v1", "self-hosted-frontend-v1"],
     })
 
 
@@ -1907,8 +1991,46 @@ def get_week_schedule():
     return jsonify({"status": "ok", "schedule": week_data})
 
 
+@flask_app.route("/api/bootstrap", methods=["POST"])
+def bootstrap():
+    """Return the initial calendar state without three separate API calls."""
+    data = request.get_json() or {}
+    week_start = data.get("week_start")
+    if not week_start:
+        today = datetime.date.today()
+        week_start = (today - datetime.timedelta(days=today.weekday())).strftime("%Y-%m-%d")
+    try:
+        start_date = datetime.datetime.strptime(week_start, "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"status": "error", "message": "Некорректная дата начала недели."}), 400
+
+    _prefetch_remote_json({
+        tenant_file(DATA_FILE): {},
+        tenant_file(STUDENTS_FILE): {},
+        tenant_file(SETTINGS_FILE): {},
+    })
+    schedule = load_json(DATA_FILE)
+    students = prepare_students()
+    settings = load_settings()
+    week_data = {}
+    for i in range(7):
+        key = (start_date + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        week_data[key] = sorted(schedule.get(key, []), key=lambda item: item.get("time", "00:00"))
+    has_students = any(str(student_id) != current_teacher_id() for student_id in students)
+    has_lessons = any(bool(lessons) for lessons in schedule.values())
+    onboarding_needed = not settings.get("onboarding_completed") and not has_students and not has_lessons
+    return jsonify({
+        "status": "ok", "schedule": week_data, "students": students,
+        "settings": settings, "onboarding_needed": onboarding_needed,
+    })
+
+
 @flask_app.route("/api/get_students", methods=["GET"])
 def get_students():
+    return jsonify({"status": "ok", "students": prepare_students()})
+
+
+def prepare_students():
     students = load_json(STUDENTS_FILE)
     changed = False
     teacher_id = str(getattr(g, "teacher_id", "") or "").strip()
@@ -1936,7 +2058,7 @@ def get_students():
                 changed = True
     if changed:
         save_json(STUDENTS_FILE, students)
-    return jsonify({"status": "ok", "students": students})
+    return students
 
 
 @flask_app.route("/api/get_settings", methods=["GET"])

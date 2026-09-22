@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TEMLI — расписание</title>
+    <link rel="stylesheet" href="styles.css?v=1.0.0">
+    <link rel="stylesheet" href="ux.css?v=1.0.0">
+</head>
+<body>
+    <div id="startup-status" role="status" aria-live="polite">
+        <div class="startup-status-card">
+            <strong id="startup-status-title">TEMLI</strong>
+            <p id="startup-status-message">Загрузка приложения…</p>
+            <button id="startup-status-retry" type="button" hidden>Повторить</button>
+        </div>
+    </div>
+    <svg class="thread-icon-sprite" aria-hidden="true">
+        <defs>
+            <symbol id="ti-chevron-left" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/><circle cx="8" cy="12" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-chevron-right" viewBox="0 0 24 24"><path d="m9.5 5.5 6.5 6.5-6.5 6.5"/><circle cx="16" cy="12" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-chevron-down" viewBox="0 0 24 24"><path d="m5.5 9 6.5 6 6.5-6"/><circle cx="12" cy="15" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-fullscreen" viewBox="0 0 24 24"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><circle cx="20" cy="9" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-students" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.4-3.8 2.2-5.6 5.5-5.6s5.1 1.8 5.5 5.6M15.5 6.2a2.7 2.7 0 0 1 0 5.2M16.4 14c2.4.4 3.7 2 4.1 4.5"/><circle cx="20.5" cy="18.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-assistant" viewBox="0 0 24 24"><path d="M6 4.5h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-10M8 9h8M8 13h5"/><circle cx="5" cy="5" r="1.4" fill="currentColor" stroke="none"/><circle cx="16.5" cy="16.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-settings" viewBox="0 0 24 24"><path d="M4 6h5M14 6h6M4 12h9M18 12h2M4 18h3M12 18h8"/><circle cx="11.5" cy="6" r="2.2"/><circle cx="15.5" cy="12" r="2.2"/><circle cx="9.5" cy="18" r="2.2"/></symbol>
+            <symbol id="ti-zoom-in" viewBox="0 0 24 24"><circle cx="10" cy="10" r="5.5"/><path d="m14 14 5 5M10 7v6M7 10h6"/><circle cx="19" cy="19" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-zoom-out" viewBox="0 0 24 24"><circle cx="10" cy="10" r="5.5"/><path d="m14 14 5 5M7 10h6"/><circle cx="19" cy="19" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-calendar" viewBox="0 0 24 24"><rect x="4.5" y="6.5" width="15" height="13" rx="2"/><path d="M8 4v5M16 4v5M4.5 10.5h15M8 14h2M14 14h2M8 17h2"/><circle cx="16" cy="17" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-pin" viewBox="0 0 24 24"><path d="M12 21s6-5.4 6-11a6 6 0 0 0-12 0c0 5.6 6 11 6 11Z"/><circle cx="12" cy="10" r="2.2"/><circle cx="12" cy="21" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-message" viewBox="0 0 24 24"><path d="M5 5.5h14v10H10l-4.5 3v-3H5z"/><path d="M9 10h6"/><circle cx="18.5" cy="15.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-delay-teacher" viewBox="0 0 24 24"><circle cx="11" cy="12" r="7"/><path d="M11 8v4l3 2M18.5 5.5l1.5-1.5"/><circle cx="19.5" cy="4.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-delay-student" viewBox="0 0 24 24"><circle cx="13" cy="12" r="7"/><path d="M13 8v4l-3 2M4 8.5v7"/><circle cx="4" cy="5" r="1.8"/><circle cx="4" cy="18.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-paid" viewBox="0 0 24 24"><path d="M8 20V4h5.2c3.2 0 5.3 1.7 5.3 4.6s-2.1 4.7-5.3 4.7H6M6 16.5h9"/><circle cx="18.5" cy="8.6" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-subscription" viewBox="0 0 24 24"><path d="M5 6.5h14M5 11h14M5 15.5h10M5 20h7"/><circle cx="19" cy="15.5" r="1.4" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-free" viewBox="0 0 24 24"><ellipse cx="10" cy="13" rx="4.5" ry="6"/><path d="M18 3.5v5M15.5 6h5"/><circle cx="18" cy="6" r="1.05" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-move" viewBox="0 0 24 24"><path d="M5 17c0-6 3-10 9-10h4M15 4l3 3-3 3"/><circle cx="5" cy="17" r="1.6" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-cancel" viewBox="0 0 24 24"><path d="M18.5 18.5A8.5 8.5 0 1 1 20 8M6 6l12 12"/><circle cx="20" cy="8" r="1.2" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-restore" viewBox="0 0 24 24"><path d="M8 7H4v-4M4.5 7A8.5 8.5 0 1 1 5 17"/><circle cx="5" cy="17" r="1.2" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-profile" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20v-1.5c0-3.7 2.2-5.7 6.5-5.7s6.5 2 6.5 5.7V20M5.5 6V4h2M18.5 6V4h-2"/><circle cx="18.5" cy="20" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-report" viewBox="0 0 24 24"><path d="M6 4.5h9l3 3V20H6zM15 4.5v3h3M9 11h6M9 15h4"/><circle cx="15.5" cy="18" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-edit" viewBox="0 0 24 24"><path d="m6 17.5.8-4 8.7-8.7 3.7 3.7-8.7 8.7zM14 6.3l3.7 3.7M5 20h9"/><circle cx="5" cy="20" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-delete" viewBox="0 0 24 24"><path d="M7 8v11h10V8M5 8h14M9 8V5h6v3M10 11v5M14 11v5"/><circle cx="17" cy="19" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-palette" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 0 0 16h1.2a1.8 1.8 0 0 0 0-3.6h-.7a1.5 1.5 0 0 1 0-3H20A8 8 0 0 0 12 4Z"/><circle cx="8" cy="10" r="1.1" fill="currentColor" stroke="none"/><circle cx="11" cy="7" r="1.1" fill="currentColor" stroke="none"/><circle cx="15" cy="8" r="1.1" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-add" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/><circle cx="19" cy="12" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/><circle cx="19" cy="7.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-copy" viewBox="0 0 24 24"><rect x="8" y="5" width="11" height="13" rx="2"/><path d="M15.5 18v1a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1"/><circle cx="19" cy="5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.7 9.2a2.5 2.5 0 0 1 4.8.9c0 2.2-2.5 2.3-2.5 4.2"/><circle cx="12" cy="17.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-receipt" viewBox="0 0 24 24"><path d="M6 4.5h12V20l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 20zM9 9h6M9 13h4"/><circle cx="16" cy="16" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-book" viewBox="0 0 24 24"><path d="M4.5 5.5c3.2-.7 5.7.1 7.5 2.2 1.8-2.1 4.3-2.9 7.5-2.2v13c-3.2-.7-5.7.1-7.5 2.2-1.8-2.1-4.3-2.9-7.5-2.2zM12 7.7v13"/><circle cx="19.5" cy="18.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-pdf" viewBox="0 0 24 24"><path d="M6 4.5h9l3 3V20H6zM15 4.5v3h3M9 11h6M9 15h6"/><circle cx="18" cy="20" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-debt" viewBox="0 0 24 24"><path d="M8 20V4h5c3.2 0 5.2 1.7 5.2 4.5S16.2 13 13 13H6M6 16.5h8"/><circle cx="19" cy="18" r="1.4" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-windows" viewBox="0 0 24 24"><path d="M5 6v12M19 6v12M8 9h3M13 15h3"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-summary" viewBox="0 0 24 24"><path d="M5 19V11M10 19V6M15 19v-9M20 19V4"/><circle cx="20" cy="4" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-birthday" viewBox="0 0 24 24"><path d="M5 12h14v8H5zM5 15c1.3 1.2 2.7 1.2 4 0 1.3 1.2 2.7 1.2 4 0 1.3 1.2 2.7 1.2 4 0 .7.6 1.3.9 2 .9M8 12V9h8v3M12 8V5"/><circle cx="12" cy="4" r="1.3" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-archive" viewBox="0 0 24 24"><path d="M5 8h14v11H5zM4 5h16v3H4zM9 12h6"/><circle cx="15" cy="12" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/><circle cx="18" cy="6" r="1.15" fill="currentColor" stroke="none"/></symbol>
+            <symbol id="ti-board" viewBox="0 0 24 24"><path d="M4 5.5h16v11H4zM8 20l4-3.5L16 20M8 10h3M13 13h3"/><circle cx="20" cy="16.5" r="1.15" fill="currentColor" stroke="none"/></symbol>
+        </defs>
+    </svg>
+    <header class="main-header">
+        <div class="header-top">
+            <button id="btn-today" class="header-btn">Сегодня</button>
+            <div class="nav-arrows">
+                <button id="btn-prev-week" class="icon-btn" aria-label="Предыдущая неделя"><svg class="thread-icon" aria-hidden="true"><use href="#ti-chevron-left"></use></svg></button>
+                <div class="header-center-stack">
+                    <button id="top-next-lesson" class="top-next-lesson" type="button" aria-controls="top-next-lesson-details" aria-expanded="false" data-i18n-ignore>
+                        <span id="top-next-lesson-summary">Ближайшее занятие…</span><svg class="thread-icon top-next-chevron" aria-hidden="true"><use href="#ti-chevron-down"></use></svg>
+                    </button>
+                    <div id="top-notification-preview" class="top-notification-preview hidden">
+                        <button id="btn-top-teacher-delay" type="button"><svg class="thread-icon" aria-hidden="true"><use href="#ti-delay-teacher"></use></svg>Я задержусь</button>
+                        <button id="btn-top-student-delay" type="button"><svg class="thread-icon" aria-hidden="true"><use href="#ti-delay-student"></use></svg>Ученик задерживается</button>
+                    </div>
+                    <div id="top-next-lesson-details" class="top-next-lesson-details hidden"></div>
+                </div>
+                <button id="btn-next-week" class="icon-btn" aria-label="Следующая неделя"><svg class="thread-icon" aria-hidden="true"><use href="#ti-chevron-right"></use></svg></button>
+            </div>
+            <div class="header-actions">
+                <button id="btn-fullscreen" class="icon-btn hidden" type="button" title="На весь экран" aria-label="На весь экран"><svg class="thread-icon" aria-hidden="true"><use href="#ti-fullscreen"></use></svg></button>
+                <button id="btn-students" class="icon-btn" title="Ученики" aria-label="Ученики"><svg class="thread-icon" aria-hidden="true"><use href="#ti-students"></use></svg><span id="student-binding-alert" class="student-binding-alert hidden" aria-hidden="true"></span></button>
+                <button id="btn-work-center" class="icon-btn work-center-btn" title="Помощник" aria-label="Помощник"><svg class="thread-icon" aria-hidden="true"><use href="#ti-assistant"></use></svg><span id="work-center-debt-alert" class="work-center-debt-alert hidden" aria-hidden="true">!</span></button>
+                <button id="btn-app-settings" class="icon-btn settings-icon-btn" title="Настройки" aria-label="Настройки"><svg class="thread-icon" aria-hidden="true"><use href="#ti-settings"></use></svg></button>
+            </div>
+        </div>
+        <div class="week-days-container">
+            <div class="time-spacer">
+                <button id="btn-zoom-in" class="zoom-btn" title="Увеличить высоту" aria-label="Увеличить высоту"><svg class="thread-icon" aria-hidden="true"><use href="#ti-zoom-in"></use></svg></button>
+                <button id="btn-zoom-out" class="zoom-btn" title="Уменьшить высоту" aria-label="Уменьшить высоту"><svg class="thread-icon" aria-hidden="true"><use href="#ti-zoom-out"></use></svg></button>
+                <button id="btn-date-picker" class="zoom-btn date-picker-trigger" type="button" title="Выбрать дату" aria-label="Выбрать дату"><svg class="thread-icon" aria-hidden="true"><use href="#ti-calendar"></use></svg></button>
+            </div>
+            <div class="days-row" id="days-header"></div>
+        </div>
+    </header>
+
+    <main id="calendar-container">
+        <div class="calendar-grid">
+            <div class="time-column" id="time-labels"></div>
+            <div class="days-grid" id="week-grid"></div>
+            <div class="events-layer" id="events-layer">
+                <div id="current-time-line" class="current-time-line hidden">
+                    <div class="time-line-dot"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Компактная строка режима переноса; ux.js переносит её над календарной сеткой. -->
+    <div id="move-hint" class="move-hint-bar hidden">
+        <span><svg class="thread-icon" aria-hidden="true"><use href="#ti-pin"></use></svg><span id="move-hint-text">Выберите новое время</span></span>
+        <button id="btn-cancel-move" class="cancel-move-btn">Отмена</button>
+    </div>
+
+    <!-- МЕНЮ ДЕЙСТВИЙ (Короткий клик по ученику) -->
+    <div id="action-menu-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="action-menu-title">Ученик</h2>
+            <p id="personal-event-notes-view" class="personal-event-notes-view hidden"></p>
+            <div class="modal-actions-column">
+                <div class="action-section-label" id="action-contact-label">Связь</div>
+                <button id="btn-action-chat-student" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-message"></use></svg>Написать ученику</button>
+                <button id="btn-action-chat-parent" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-message"></use></svg>Написать родителю</button>
+                <div id="group-action-details" class="group-action-details hidden"></div>
+                <div class="action-section-label" id="action-notification-label">Оповещения</div>
+                <div class="payment-actions-row" id="action-notification-actions">
+                    <button id="btn-action-teacher-delay" class="action-menu-btn future-notification-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-delay-teacher"></use></svg>Я задержусь</button>
+                    <button id="btn-action-student-delay" class="action-menu-btn future-notification-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-delay-student"></use></svg>Ученик задерживается</button>
+                </div>
+                <div class="action-section-label" id="individual-payment-label">Оплата</div>
+                <div class="payment-actions-row payment-actions-row-three" id="action-payment-actions">
+                    <button id="btn-action-paid" class="action-menu-btn paid-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-paid"></use></svg>Оплачено</button>
+                    <button id="btn-action-subscription" class="action-menu-btn subscription-pay-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-subscription"></use></svg>Абонемент</button>
+                    <button id="btn-action-free" class="action-menu-btn free-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-free"></use></svg>Бесплатно</button>
+                </div>
+                <div class="action-section-label" id="action-event-label">Занятие</div>
+                <div class="payment-actions-row">
+                    <button id="btn-action-move-trigger" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-move"></use></svg>Перенести</button>
+                    <button id="btn-action-cancel-once" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-cancel"></use></svg>Отменить</button>
+                </div>
+
+                <button id="btn-action-student-card" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-profile"></use></svg>Карточка ученика</button>
+                <button id="btn-action-report" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-report"></use></svg>Итог занятия</button>
+                <button id="btn-action-settings" class="action-menu-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-settings"></use></svg>Настройки занятия</button>
+                <button id="btn-action-delete" class="action-menu-btn delete-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-delete"></use></svg>Удалить</button>
+
+                <!-- ПАЛИТРА ЦВЕТОВ: 7 быстрых цветов + расширенная палитра -->
+                <div class="action-section-label" id="action-color-label">Цвет</div>
+                <div class="inline-color-palette" id="action-color-palette">
+                    <div class="color-swatch color-0" data-color="0"></div>
+                    <div class="color-swatch color-1" data-color="1"></div>
+                    <div class="color-swatch color-2" data-color="2"></div>
+                    <div class="color-swatch color-3" data-color="3"></div>
+                    <div class="color-swatch color-4" data-color="4"></div>
+                    <div class="color-swatch color-5" data-color="5"></div>
+                    <div class="color-swatch color-6" data-color="6"></div>
+                    <div class="color-swatch color-picker-open" id="color-picker-open" role="button" aria-label="Другой цвет"><svg class="thread-icon" aria-hidden="true"><use href="#ti-palette"></use></svg></div>
+                </div>
+
+                <button id="btn-action-close" class="secondary-btn">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ДИАЛОГ ПЕРЕНОСА / КОПИРОВАНИЯ -->
+    <div id="move-modal-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="move-modal-title">Действие с занятием</h2>
+            <p id="move-modal-desc" class="modal-desc"></p>
+            <div id="move-time-picker" class="move-time-picker">
+                <strong id="move-time-picker-label">Время начала</strong>
+                <div class="move-time-presets" aria-label="Быстрый выбор минут">
+                    <button type="button" data-move-minute="0">:00</button>
+                    <button type="button" data-move-minute="15">:15</button>
+                    <button type="button" data-move-minute="30">:30</button>
+                    <button type="button" data-move-minute="45">:45</button>
+                </div>
+                <div class="move-time-fine">
+                    <button id="btn-move-time-minus" type="button" aria-label="Уменьшить время на 5 минут">−5</button>
+                    <input id="move-target-time" type="time" step="300" aria-label="Новое время занятия">
+                    <button id="btn-move-time-plus" type="button" aria-label="Увеличить время на 5 минут">+5</button>
+                </div>
+                <small id="move-time-status" aria-live="polite"></small>
+            </div>
+            <div class="modal-actions-column">
+                <button id="btn-action-copy" class="primary-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-add"></use></svg>Добавить ещё одним занятием</button>
+                <button id="btn-action-move-once" class="secondary-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-move"></use></svg>Перенести (разово)</button>
+                <button id="btn-action-move-all" class="secondary-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-move"></use></svg>Перенести все будущие</button>
+                <button id="btn-action-move-cancel" class="danger-btn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ДИАЛОГ УДАЛЕНИЯ -->
+    <div id="delete-modal-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="delete-modal-title">Удаление занятия</h2>
+            <p class="modal-desc" id="delete-modal-desc">Как удалить это занятие?</p>
+            <div class="modal-actions-column">
+                <button id="btn-delete-once" class="danger-btn">Удалить только это занятие</button>
+                <button id="btn-delete-all" class="danger-btn">Удалить все будущие (навсегда)</button>
+                <button id="btn-delete-cancel" class="secondary-btn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ПОДТВЕРЖДЕНИЕ ОПЛАТЫ -->
+    <div id="paid-confirm-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="paid-confirm-title">Оплата</h2>
+            <p id="paid-confirm-desc" class="modal-desc">Подтвердить оплату?</p>
+            <div id="group-paid-members" class="group-paid-members hidden"></div>
+            <label class="checkbox-label receipt-send-checkbox">
+                <input type="checkbox" id="send-receipt-checkbox" checked>
+                <span>Отправить чек родителю</span>
+            </label>
+            <div class="modal-actions-column">
+                <button id="btn-paid-confirm-apply" class="primary-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-check"></use></svg>Подтвердить оплату</button>
+                <button id="btn-paid-confirm-cancel" class="secondary-btn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ОПЛАТА АБОНЕМЕНТА -->
+    <div id="subscription-pay-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="subscription-pay-title">Абонемент</h2>
+            <p id="subscription-pay-desc" class="modal-desc">Укажите сумму оплаты.</p>
+            <div class="form-group text-left">
+                <label>Сумма абонемента, ₽</label>
+                <input type="number" id="subscription-pay-amount" min="0" step="1" inputmode="decimal" placeholder="Например: 3000">
+                <small id="subscription-pay-hint" class="field-hint"></small>
+            </div>
+            <div class="form-group text-left">
+                <label>Зачесть за</label>
+                <div class="subscription-count-stepper">
+                    <button type="button" id="subscription-count-minus" class="subscription-count-btn" aria-label="Уменьшить количество занятий">−</button>
+                    <strong id="subscription-custom-count" class="subscription-count-value">3 занятия</strong>
+                    <button type="button" id="subscription-count-plus" class="subscription-count-btn" aria-label="Увеличить количество занятий">+</button>
+                </div>
+            </div>
+            <label class="checkbox-label receipt-send-checkbox">
+                <input type="checkbox" id="subscription-send-receipt-checkbox" checked>
+                <span>Отправить чек родителю</span>
+            </label>
+            <div class="modal-actions-column">
+                <button id="btn-subscription-pay-apply" class="primary-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-check"></use></svg>Оплатить абонемент</button>
+                <button id="btn-subscription-pay-cancel" class="secondary-btn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- КОМПАКТНЫЙ ВЫБОР ТИПА НОВОЙ ЗАПИСИ -->
+    <div id="add-type-overlay" class="hidden">
+        <div class="modal-content add-type-modal" role="dialog" aria-modal="true" aria-labelledby="add-type-title">
+            <header class="modal-header add-type-header">
+                <div>
+                    <h2 id="add-type-title">Что добавить?</h2>
+                    <p id="add-type-context" class="add-type-context" data-i18n-ignore></p>
+                </div>
+                <button id="btn-close-add-type" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="add-type-choices">
+                <button id="btn-add-type-student" class="add-type-choice" type="button">
+                    <span class="add-type-icon"><svg class="thread-icon" aria-hidden="true"><use href="#ti-profile"></use></svg></span>
+                    <span>Занятие с учеником</span>
+                    <svg class="thread-icon add-type-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <button id="btn-add-type-group" class="add-type-choice" type="button">
+                    <span class="add-type-icon"><svg class="thread-icon" aria-hidden="true"><use href="#ti-students"></use></svg></span>
+                    <span>Групповое занятие</span>
+                    <svg class="thread-icon add-type-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <button id="btn-add-type-personal" class="add-type-choice personal-choice" type="button">
+                    <span class="add-type-icon"><svg class="thread-icon" aria-hidden="true"><use href="#ti-pin"></use></svg></span>
+                    <span>Личное дело</span>
+                    <svg class="thread-icon add-type-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- МОДАЛЬНОЕ ОКНО НАСТРОЕК / ДОБАВЛЕНИЯ ЗАНЯТИЯ -->
+    <div id="modal-overlay" class="hidden">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2 id="modal-title">Настройки занятия</h2>
+                <button id="btn-close-modal" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <input type="hidden" id="lesson-id">
+                <input type="hidden" id="lesson-date">
+
+                <div id="form-container">
+                    <div class="form-group hidden" id="lesson-type-group">
+                        <label>Кого добавить в слот</label>
+                        <select id="lesson-type-select">
+                            <option value="student">Ученика</option>
+                            <option value="group">Группу</option>
+                            <option value="personal">Личное дело</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group hidden" id="personal-event-group">
+                        <label for="personal-event-title">Название</label>
+                        <input type="text" id="personal-event-title" maxlength="100" placeholder="Например: врач, встреча, дорога">
+                        <label for="personal-event-notes" class="personal-notes-label">Заметки</label>
+                        <textarea id="personal-event-notes" rows="4" maxlength="1000" placeholder="Необязательно"></textarea>
+                        <small class="field-hint">Заметки видны только владельцу расписания.</small>
+                    </div>
+
+                    <div class="form-group hidden" id="group-editor-group">
+                        <label>Группа</label>
+                        <input type="text" id="group-name" placeholder="Название группы, например: 9 класс">
+                        <div class="group-members-head">Ученики группы</div>
+                        <div id="group-members-container" class="group-members-list"></div>
+                        <button type="button" id="btn-add-group-member" class="secondary-btn compact-add-btn">＋ Добавить ученика</button>
+                    </div>
+
+                    <!-- Выбор или ввод ученика при СОЗДАНИИ -->
+                    <div class="form-group" id="student-select-group">
+                        <label>Ученик</label>
+                        <select id="student-select">
+                            <option value="">-- Выбрать ученика --</option>
+                            <option value="manual">Вписать вручную...</option>
+                        </select>
+                        <input type="text" id="manual-student-name" class="hidden" placeholder="Имя ученика">
+                    </div>
+
+                    <section id="lesson-student-setup" class="lesson-student-setup" data-i18n-ignore>
+                        <div class="lesson-student-setup-head">
+                            <strong>Контакты</strong>
+                            <small>Сохранятся в карточке ученика</small>
+                        </div>
+                        <input type="text" id="lesson-parent-name" maxlength="128" placeholder="Имя родителя (необязательно)" aria-label="Имя родителя (необязательно)">
+                        <div id="lesson-bot-invite-options" class="lesson-bot-invite-options" hidden>
+                            <strong>Приглашения — по желанию</strong>
+                            <label class="checkbox-label"><input type="checkbox" id="lesson-invite-student"><span>Создать ссылку ученику</span></label>
+                            <label class="checkbox-label"><input type="checkbox" id="lesson-invite-parent"><span>Создать ссылку родителю</span></label>
+                            <small id="lesson-bot-invite-hint" class="field-hint"></small>
+                        </div>
+                        <details id="lesson-manual-contacts">
+                        <summary>Контакты вручную</summary>
+                        <div class="form-group">
+                            <label>Контакт ученика</label>
+                            <div id="lesson-student-contacts" class="contacts-list"></div>
+                            <button type="button" class="secondary-btn add-contact-btn" data-target="lesson-student-contacts">＋ Добавить контакт</button>
+                        </div>
+                        <div class="form-group">
+                            <label>Контакт родителя</label>
+                            <div id="lesson-parent-contacts" class="contacts-list"></div>
+                            <button type="button" class="secondary-btn add-contact-btn" data-target="lesson-parent-contacts">＋ Добавить контакт</button>
+                        </div>
+                        </details>
+                    </section>
+                    <!-- Отображение ученика при РЕДАКТИРОВАНИИ -->
+                    <div class="form-group hidden" id="student-fixed-group">
+                        <label>Ученик</label>
+                        <input type="text" id="fixed-student-name" readonly class="readonly-input">
+                    </div>
+
+                    <div class="form-group" id="student-lesson-price-group">
+                        <label>Стоимость занятия, ₽</label>
+                        <input type="number" id="lesson-price" min="0" step="1" inputmode="decimal" placeholder="1500">
+                    </div>
+
+                    <div class="form-group hidden" id="lesson-price-scope-group">
+                        <label>Где изменить цену</label>
+                        <div class="price-scope-options">
+                            <label><input type="radio" name="lesson-price-scope" value="single" checked><span>Только это занятие</span></label>
+                            <label><input type="radio" name="lesson-price-scope" value="future"><span>Это и будущие неоплаченные</span></label>
+                        </div>
+                        <small class="field-hint">Прошедшие, отменённые, бесплатные и оплаченные занятия не изменятся.</small>
+                    </div>
+
+                    <!-- Время и Длительность -->
+                    <div class="form-row" id="time-duration-group">
+                        <div class="form-group flex-1">
+                            <label>Время начала</label>
+                            <input type="time" id="lesson-time" step="300">
+                        </div>
+                        <div class="form-group flex-1">
+                            <label>Длительность (мин)</label>
+                            <input type="number" id="lesson-duration" value="60" min="15" max="1440" step="5">
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="repeat-group">
+                        <label>Повтор</label>
+                        <select id="lesson-repeat">
+                            <option value="year" selected>До конца учебного года</option>
+                            <option value="no">Только сегодня (разово)</option>
+                            <option value="month">Каждую неделю на месяц</option>
+                        </select>
+                        <div id="repeat-until-wrap" class="form-group hidden">
+                            <label>Каждую неделю до</label>
+                            <input type="date" id="repeat-until">
+                        </div>
+                    </div>
+
+                    <div class="form-group reminder-group">
+                        <input type="checkbox" id="reminder-enabled" checked hidden>
+                        <label id="lesson-reminder-label" data-i18n-ignore>Напоминать за (если включено у ученика)</label>
+                        <div id="reminder-minutes-wrap" class="reminder-minutes-wrap">
+                            <span>за</span>
+                            <input type="number" id="reminder-minutes" value="60" min="0" max="10080" step="5">
+                            <span>минут</span>
+                        </div>
+                    </div>
+
+                </div>
+
+                <div class="modal-actions">
+                    <button id="btn-save" class="primary-btn">Сохранить</button>
+                    <button id="btn-cancel-modal" class="secondary-btn">Отмена</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="lesson-invite-result-overlay" class="hidden" data-i18n-ignore>
+        <div class="modal-content compact-modal" role="dialog" aria-modal="true" aria-labelledby="lesson-invite-result-title">
+            <header class="modal-header">
+                <h2 id="lesson-invite-result-title">Занятие сохранено</h2>
+                <button id="btn-close-lesson-invite-result" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <p id="lesson-invite-result-help" class="modal-desc"></p>
+                <div id="lesson-invite-result-links" class="lesson-invite-result-links"></div>
+                <p id="lesson-invite-result-status" class="student-bot-invites-status" role="status"></p>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-done-lesson-invite-result" class="primary-btn" type="button">Готово</button>
+            </div>
+        </div>
+    </div>
+    <!-- МИКРООТЧЁТ ПО ЗАНЯТИЮ -->
+    <div id="lesson-report-overlay" class="hidden">
+        <div class="modal-content compact-modal">
+            <header class="modal-header">
+                <h2 id="lesson-report-title">Итог занятия</h2>
+                <button id="btn-close-lesson-report" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Коротко: что прошли / результат</label>
+                    <textarea id="lesson-report-text" rows="4" maxlength="1000" placeholder="Например: квадратные неравенства, №15; стало лучше с ОДЗ"></textarea>
+                    <small class="field-hint">Сохраняется в истории ученика. Можно оставить пустым.</small>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-save-lesson-report" class="primary-btn" type="button">Сохранить</button>
+                <button id="btn-cancel-lesson-report" class="secondary-btn" type="button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ВСТРОЕННЫЙ КАЛЕНДАРЬ ВЫБОРА ДАТЫ -->
+    <div id="date-picker-overlay" class="hidden">
+        <div class="modal-content date-picker-modal">
+            <header class="modal-header">
+                <button id="date-picker-prev" class="icon-btn" type="button" aria-label="Предыдущий месяц"><svg class="thread-icon" aria-hidden="true"><use href="#ti-chevron-left"></use></svg></button>
+                <h2 id="date-picker-title">Месяц</h2>
+                <button id="date-picker-next" class="icon-btn" type="button" aria-label="Следующий месяц"><svg class="thread-icon" aria-hidden="true"><use href="#ti-chevron-right"></use></svg></button>
+            </header>
+            <div class="date-picker-weekdays">
+                <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
+            </div>
+            <div id="date-picker-grid" class="date-picker-grid"></div>
+            <div class="modal-actions">
+                <button id="date-picker-today" class="secondary-btn" type="button">Сегодня</button>
+                <button id="date-picker-close" class="secondary-btn" type="button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- РАБОЧИЙ ЦЕНТР -->
+    <div id="work-center-overlay" class="hidden">
+        <div class="modal-content compact-modal">
+            <header class="modal-header">
+                <h2>Помощник</h2>
+                <button id="btn-close-work-center" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body compact-stack">
+                <button class="hub-row" data-hub-section="debts">
+                    <span><svg class="thread-icon" aria-hidden="true"><use href="#ti-debt"></use></svg>Кто должен</span><strong id="hub-debts-count">0</strong>
+                </button>
+                <div id="hub-debts" class="hub-panel hidden"></div>
+
+                <button class="hub-row" data-hub-section="windows">
+                    <span><svg class="thread-icon" aria-hidden="true"><use href="#ti-windows"></use></svg>Окна этой недели</span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <div id="hub-windows" class="hub-panel hidden">
+                    <div id="hub-windows-copy-toolbar" class="hub-copy-toolbar hidden">
+                        <button id="btn-copy-week-windows" class="hub-copy-btn" type="button" aria-label="Скопировать окна недели" title="Скопировать окна недели">
+                            <svg class="thread-icon" aria-hidden="true"><use href="#ti-copy"></use></svg>
+                        </button>
+                    </div>
+                    <div id="hub-windows-list"></div>
+                </div>
+
+                <button class="hub-row" data-hub-section="summary">
+                    <span><svg class="thread-icon" aria-hidden="true"><use href="#ti-summary"></use></svg>Сводка недели</span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <div id="hub-summary" class="hub-panel hidden"></div>
+
+                <button class="hub-row" data-hub-section="birthdays">
+                    <span><svg class="thread-icon" aria-hidden="true"><use href="#ti-birthday"></use></svg>Дни рождения</span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <div id="hub-birthdays" class="hub-panel hidden"></div>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-close-work-center-bottom" class="secondary-btn" type="button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- УЧЕНИКИ -->
+    <div id="students-overlay" class="hidden">
+        <div class="modal-content compact-modal">
+            <header class="modal-header">
+                <h2>Ученики</h2>
+                <button id="btn-close-students" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <input type="search" id="students-search" placeholder="Найти ученика">
+                <label class="checkbox-label archive-filter"><input id="students-show-archived" type="checkbox">Архив учеников</label>
+                <div id="students-list" class="students-list"></div>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-close-students-bottom" class="secondary-btn" type="button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- КАРТОЧКА УЧЕНИКА -->
+    <div id="student-card-overlay" class="hidden">
+        <div class="modal-content compact-modal">
+            <header class="modal-header">
+                <h2 id="student-card-title">Ученик</h2>
+                <button id="btn-close-student-card" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <div class="student-card-overview">
+                    <div class="student-lesson-stats">
+                        <span>Оплачено / проведено</span>
+                        <strong id="student-lessons-ratio">— / —</strong>
+                    </div>
+                    <button id="btn-student-payment" class="primary-btn" type="button"><svg class="thread-icon" aria-hidden="true"><use href="#ti-paid"></use></svg>Распределить общую сумму</button>
+                </div>
+                <details id="student-finances" class="student-finances">
+                    <summary>Занятия и оплаты</summary>
+                    <div id="student-payment-lessons" aria-live="polite"></div>
+                    <details class="student-payment-history">
+                        <summary>История общих оплат и отмена</summary>
+                        <div id="student-payment-transactions"></div>
+                    </details>
+                </details>
+                <div class="form-group">
+                    <label>Имя в календаре <small class="muted-inline">(необязательно)</small></label>
+                    <input type="text" id="student-calendar-name" maxlength="24" placeholder="Например: Саша">
+                    <small class="field-hint">Если оставить пустым, в календаре будет обычное имя.</small>
+                </div>
+                <div class="form-group">
+                    <label>День рождения</label>
+                    <input type="date" id="student-birthday">
+                </div>
+                <div class="form-group">
+                    <label>Статус</label>
+                    <div class="student-status-switch" role="group" aria-label="Статус ученика">
+                        <button type="button" id="student-status-active" class="student-status-btn active" data-status="active">Активный</button>
+                        <button type="button" id="student-status-paused" class="student-status-btn" data-status="paused">Пауза</button>
+                    </div>
+                    <small class="field-hint">Ученики на паузе не показываются при добавлении нового занятия. Уже созданные занятия сохраняются.</small>
+                </div>
+                <div class="form-group">
+                    <label>Заметка</label>
+                    <textarea id="student-note" rows="3" maxlength="1000" placeholder="Например: готовится к ЕГЭ, по средам только после 18:00"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Ссылка на доску</label>
+                    <input type="url" id="student-board-link" placeholder="https://...">
+                    <small class="field-hint">Индивидуальная ссылка этого ученика.</small>
+                </div>
+                <div class="form-group">
+                    <label>Своя ссылка Zoom <small class="muted-inline">(необязательно)</small></label>
+                    <input type="url" id="student-zoom-link" placeholder="Если пусто — используется общая ссылка">
+                    <small class="field-hint">Заполняйте только если этому ученику нужна другая ссылка.</small>
+                </div>
+                <div class="form-group">
+                    <label>Контакт ученика</label>
+                    <div id="student-card-student-contacts" class="contacts-list"></div>
+                    <button type="button" class="secondary-btn add-contact-btn" data-target="student-card-student-contacts">＋ Добавить контакт</button>
+                </div>
+                <div class="form-group">
+                    <label>Контакт родителя</label>
+                            <input type="text" id="student-parent-name" maxlength="128" placeholder="Имя родителя (необязательно)" aria-label="Имя родителя (необязательно)" data-i18n-ignore>
+                            <div id="student-card-parent-contacts" class="contacts-list"></div>
+                    <button type="button" class="secondary-btn add-contact-btn" data-target="student-card-parent-contacts">＋ Добавить контакт</button>
+                </div>
+                <div class="student-notification-options" data-i18n-ignore>
+                    <label class="checkbox-label"><input type="checkbox" id="student-reminders"><span id="student-reminders-label">Напоминать ученику о занятии</span></label>
+                    <label class="checkbox-label"><input type="checkbox" id="student-parent-end"><span id="student-parent-end-label">Родителю об окончании</span></label>
+                </div>
+                <details id="student-bot-invites" class="form-group student-bot-invites-card" data-i18n-ignore>
+                    <summary id="student-bot-invites-title">Пригласить в моего бота</summary>
+                    <div class="student-bot-invites-body">
+                        <p id="student-bot-invites-help" class="student-bot-invites-help"></p>
+                        <div class="student-bot-invite-actions">
+                            <button id="student-bot-invite-student" class="secondary-btn" type="button">Ссылка ученику</button>
+                            <button id="student-bot-invite-parent" class="secondary-btn" type="button">Ссылка родителю</button>
+                        </div>
+                        <div id="student-bot-invite-result" class="student-bot-invite-result" hidden>
+                            <strong id="student-bot-invite-result-label">Готовая ссылка</strong>
+                            <div class="student-bot-invite-link-row">
+                                <input id="student-bot-invite-url" type="text" readonly aria-label="Ссылка-приглашение">
+                                <button id="student-bot-invite-copy" type="button"><svg class="thread-icon" aria-hidden="true"><use href="#ti-copy"></use></svg><span id="student-bot-invite-copy-label">Копировать</span></button>
+                            </div>
+                        </div>
+                        <p id="student-bot-invites-status" class="student-bot-invites-status" role="status"></p>
+                        <div id="student-bot-bindings" class="student-bot-bindings"></div>
+                        <button id="student-bot-invites-refresh" class="student-bot-invites-refresh" type="button">Обновить привязки</button>
+                    </div>
+                </details>
+                <div class="form-group student-history-section">
+                    <div class="student-history-head">
+                        <label>История занятий</label>
+                        <small id="student-history-summary" class="muted-inline"></small>
+                    </div>
+                    <div id="student-history-list" class="student-history-list">
+                        <div class="student-history-empty">Загрузка…</div>
+                    </div>
+                </div>
+                <button id="btn-archive-student" class="secondary-btn" type="button">Убрать ученика в архив</button>
+                <details class="settings-details student-delete-section">
+                    <summary>Удаление ученика</summary>
+                    <div class="details-body">
+                        <small class="field-hint">Профиль и будущие занятия удалятся без возможности восстановления. Прошедшие занятия, оплаты, чеки и книга учёта сохранятся.</small>
+                        <button id="btn-delete-student" class="danger-btn" type="button">Удалить ученика полностью</button>
+                    </div>
+                </details>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-save-student-card" class="primary-btn" type="button">Сохранить</button>
+                <button id="btn-cancel-student-card" class="secondary-btn" type="button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ОПЛАТА ОТ УЧЕНИКА / РОДИТЕЛЯ -->
+    <div id="student-payment-overlay" class="hidden">
+        <div class="modal-content compact-modal">
+            <header class="modal-header">
+                <h2 id="student-payment-title">Оплата</h2>
+                <button id="btn-close-student-payment" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <div id="student-payment-options" class="quick-payment-options"></div>
+                <p id="student-payment-explanation" class="field-hint"></p>
+                <div class="form-group">
+                    <label>Сумма, ₽</label>
+                    <input type="number" id="student-payment-amount" min="1" step="1" inputmode="decimal" placeholder="Например: 15000">
+                </div>
+                <label class="checkbox-label receipt-send-checkbox">
+                    <input type="checkbox" id="student-payment-send-receipt" checked>
+                    <span>Отправить чек родителю</span>
+                </label>
+            </div>
+            <div class="modal-actions-column">
+                <button id="btn-apply-student-payment" class="primary-btn" type="button">Зачесть оплату</button>
+                <button id="btn-cancel-student-payment" class="secondary-btn" type="button">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ПРЕДУПРЕЖДЕНИЕ О ЗАНЯТИИ В ВЫХОДНОЙ -->
+    <div id="day-off-warning-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="day-off-warning-title">Занятие в выходной</h2>
+            <p class="modal-desc" id="day-off-warning-desc">Вообще-то у вас выходной. Не советую 😄 Отдых тоже входит в расписание. Всё равно поставить занятие?</p>
+            <div class="modal-actions-column">
+                <button id="btn-day-off-confirm" class="primary-btn" type="button">Всё равно поставить</button>
+                <button id="btn-day-off-cancel" class="secondary-btn" type="button">Не сегодня</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ПЕРВИЧНАЯ НАСТРОЙКА ПУСТОГО АККАУНТА -->
+    <div id="onboarding-overlay" class="hidden">
+        <div class="modal-content onboarding-modal">
+            <div id="onboarding-step-settings">
+                <div class="onboarding-kicker">Первый запуск · 1 из 2</div>
+                <h2>Настроим вид расписания</h2>
+                <p class="modal-subtitle">Укажите обычные рабочие часы. Их всегда можно изменить в настройках.</p>
+                <div class="form-group">
+                    <label>Рабочие часы</label>
+                    <div class="working-hours-row">
+                        <input type="time" id="onboarding-work-start" step="300" value="06:00">
+                        <span>—</span>
+                        <input type="time" id="onboarding-work-end" step="300" value="00:00">
+                    </div>
+                </div>
+                <div class="modal-actions-column">
+                    <button id="btn-onboarding-next" class="primary-btn" type="button">Далее</button>
+                    <button class="secondary-btn btn-onboarding-skip" type="button">Пропустить настройку</button>
+                </div>
+            </div>
+            <div id="onboarding-step-lesson" class="hidden">
+                <div class="onboarding-kicker">Первый запуск · 2 из 2</div>
+                <h2>Добавим первое занятие</h2>
+                <p class="modal-subtitle">Создаётся одно разовое занятие. Повторы можно включить позже в его настройках.</p>
+                <div class="form-group">
+                    <label>Имя ученика</label>
+                    <input type="text" id="onboarding-student-name" maxlength="100" placeholder="Например: Кирилл">
+                </div>
+                <div class="form-group">
+                    <label>Стоимость, ₽</label>
+                    <input type="number" id="onboarding-price" min="0" step="1" inputmode="decimal" placeholder="Например: 1300">
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>Дата</label>
+                        <input type="date" id="onboarding-lesson-date">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Время</label>
+                        <input type="time" id="onboarding-lesson-time" step="300" value="17:00">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Длительность, минут</label>
+                    <input type="number" id="onboarding-duration" min="15" max="1440" step="5" value="60">
+                </div>
+                <div class="modal-actions-column">
+                    <button id="btn-onboarding-create" class="primary-btn" type="button">Создать занятие</button>
+                    <button id="btn-onboarding-back" class="secondary-btn" type="button">Назад</button>
+                    <button class="secondary-btn btn-onboarding-skip" type="button">Пропустить настройку</button>
+                </div>
+            </div>
+            <div id="onboarding-step-done" class="hidden text-center">
+                <div class="onboarding-done-mark"><svg class="thread-icon" aria-hidden="true"><use href="#ti-check"></use></svg></div>
+                <h2>TEMLI готов к работе</h2>
+                <p class="modal-subtitle">Первое занятие уже в календаре. Откройте список учеников, выберите ученика и откройте его карточку. Там можно добавить Telegram-контакт ученика или родителя и персональную ссылку на доску.</p>
+                <div class="modal-actions-column">
+                    <button id="btn-onboarding-finish" class="primary-btn" type="button">Открыть расписание</button>
+                    <button id="btn-onboarding-receipts" class="secondary-btn" type="button">Настроить чеки</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ОБЩИЕ НАСТРОЙКИ -->
+    <div id="app-settings-overlay" class="hidden">
+        <div class="modal-content compact-modal">
+            <header class="modal-header">
+                <div><h2>Настройки TEMLI</h2><small id="settings-build-version" data-i18n-ignore>TEMLI 1.0.0</small></div>
+                <button id="btn-close-app-settings" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body compact-stack">
+                <button id="btn-open-help" class="settings-link-row help-link-row" type="button">
+                    <span class="settings-link-main"><strong><svg class="thread-icon" aria-hidden="true"><use href="#ti-help"></use></svg>Как пользоваться</strong><small>Первые шаги и все возможности</small></span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <details id="personal-bot-panel" class="form-group" translate="no" data-i18n-ignore>
+                    <summary id="personal-bot-title">Мой бот</summary>
+                    <p id="personal-bot-help"></p>
+                    <p id="personal-bot-status" role="status" style="overflow-wrap:anywhere"></p>
+                    <label id="personal-bot-label" for="personal-bot-token">Токен BotFather</label>
+                    <input id="personal-bot-token" type="password" autocomplete="new-password" spellcheck="false" maxlength="128">
+                    <button id="personal-bot-check" class="secondary-btn" type="button">Проверить</button>
+                    <button id="personal-bot-disconnect" class="secondary-btn" type="button" hidden>Отключить</button>
+                    <details id="notification-templates-panel" class="notification-templates-panel">
+                        <summary id="notification-templates-title">Тексты сообщений</summary>
+                        <p id="notification-templates-help" class="field-hint">Редкая настройка. Пустое поле использует стандартный текст.</p>
+                        <label id="student-binding-template-label" for="student-binding-template">После подключения ученика</label>
+                        <textarea id="student-binding-template" rows="3" maxlength="1000"></textarea>
+                        <small id="student-binding-template-hint" class="field-hint">Можно использовать {name}.</small>
+                        <label id="parent-binding-template-label" for="parent-binding-template">После подключения родителя</label>
+                        <textarea id="parent-binding-template" rows="3" maxlength="1000"></textarea>
+                        <small id="parent-binding-template-hint" class="field-hint">Можно использовать {name}.</small>
+                        <label id="student-reminder-template-label" for="student-reminder-template">Напоминание ученику</label>
+                        <textarea id="student-reminder-template" rows="3" maxlength="1000"></textarea>
+                        <small id="student-reminder-template-hint" class="field-hint">Переменные: {time}, {link}.</small>
+                        <label id="parent-end-template-label" for="parent-end-template">Родителю после занятия</label>
+                        <textarea id="parent-end-template" rows="3" maxlength="1000"></textarea>
+                        <small id="parent-end-template-hint" class="field-hint">Переменные: {start}, {end}.</small>
+                        <label id="teacher-delay-template-label" for="teacher-delay-template">Я задержусь — ученику</label>
+                        <textarea id="teacher-delay-template" rows="3" maxlength="1000"></textarea>
+                        <label id="student-delay-template-label" for="student-delay-template">Ученик задерживается — ученику</label>
+                        <textarea id="student-delay-template" rows="3" maxlength="1000"></textarea>
+                        <label id="parent-delay-template-label" for="parent-delay-template">Ученик задерживается — родителю</label>
+                        <textarea id="parent-delay-template" rows="3" maxlength="1000"></textarea>
+                        <small id="delay-template-hint" class="field-hint">{time} — время начала с учётом задержки.</small>
+                        <button id="btn-reset-notification-templates" class="secondary-btn" type="button">Вернуть стандартные тексты</button>
+                        <small id="notification-templates-status" class="field-hint" role="status"></small>
+                    </details>
+                </details>
+                <div class="settings-mini-title">Язык и валюта</div>
+                <div class="compact-grid-two settings-locale-grid">
+                    <div class="form-group compact-setting-field">
+                        <label for="interface-language">Язык интерфейса</label>
+                        <div id="interface-language-segment" class="language-segment" role="radiogroup" aria-label="Язык интерфейса">
+                            <span class="language-segment-glow" aria-hidden="true"></span>
+                            <button class="language-segment-option" type="button" data-language="ru" role="radio" aria-checked="true"><strong>RU</strong><small>Русский</small></button>
+                            <button class="language-segment-option" type="button" data-language="en" role="radio" aria-checked="false"><strong>EN</strong><small>English</small></button>
+                        </div>
+                        <select id="interface-language" class="language-native-select" tabindex="-1" aria-hidden="true">
+                            <option value="ru">Русский</option>
+                            <option value="en">English</option>
+                        </select>
+                    </div>
+                    <div class="form-group compact-setting-field">
+                        <label for="interface-currency">Валюта</label>
+                        <select id="interface-currency">
+                            <option value="RUB">RUB — ₽</option>
+                            <option value="USD">USD — $</option>
+                            <option value="EUR">EUR — €</option>
+                            <option value="CNY">CNY — ¥</option>
+                            <option value="TRY">TRY — ₺</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group compact-setting-field">
+                    <label>Рабочие часы</label>
+                    <div class="working-hours-row">
+                        <input type="time" id="work-start" step="300">
+                        <span>—</span>
+                        <input type="time" id="work-end" step="300">
+                    </div>
+                </div>
+                <div class="form-group compact-setting-field">
+                    <label>Выходные дни</label>
+                    <div class="weekday-toggle-grid" id="days-off-options">
+                        <label><input type="checkbox" value="0"><span>Пн</span></label>
+                        <label><input type="checkbox" value="1"><span>Вт</span></label>
+                        <label><input type="checkbox" value="2"><span>Ср</span></label>
+                        <label><input type="checkbox" value="3"><span>Чт</span></label>
+                        <label><input type="checkbox" value="4"><span>Пт</span></label>
+                        <label><input type="checkbox" value="5"><span>Сб</span></label>
+                        <label><input type="checkbox" value="6"><span>Вс</span></label>
+                    </div>
+                    <small class="field-hint">Дни останутся в календаре, но помощник не будет предлагать в них свободные окна.</small>
+                </div>
+                <div class="form-group compact-setting-field">
+                    <label>Общая ссылка Zoom / Telemost</label>
+                    <input type="url" id="default-zoom-link" placeholder="https://zoom.us/...">
+                    <small class="field-hint">Используется для всех учеников, у которых не указана своя ссылка.</small>
+                </div>
+                <div class="settings-mini-title">Дополнительно</div>
+                <div class="student-notification-options" data-i18n-ignore>
+                    <small id="notification-defaults-hint" class="field-hint">Для новых учеников. Существующие настройки не меняются.</small>
+                    <label class="checkbox-label settings-checkbox compact-setting-row"><input type="checkbox" id="default-reminders-enabled"><span id="default-reminders-label">Напоминать ученику о занятии</span></label>
+                    <label class="checkbox-label settings-checkbox compact-setting-row"><input type="checkbox" id="default-parent-end"><span id="default-parent-end-label">Родителю об окончании</span></label>
+                </div>
+                <div class="settings-mini-title">Чеки</div>
+                <label class="checkbox-label settings-checkbox compact-setting-row">
+                    <input type="checkbox" id="default-send-receipts" checked>
+                    <span>Отправлять чек родителю</span>
+                </label>
+                <label class="checkbox-label settings-checkbox compact-setting-row">
+                    <input type="checkbox" id="default-send-receipt-copy" checked>
+                    <span>Присылать копию чека мне</span>
+                </label>
+                <button id="btn-open-receipt-settings" class="settings-link-row" type="button">
+                    <span><svg class="thread-icon" aria-hidden="true"><use href="#ti-receipt"></use></svg>Данные для чека</span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <div class="settings-mini-title">Файлы и экспорт</div>
+                <button id="btn-download-book" class="settings-link-row export-link-row" type="button">
+                    <span class="settings-link-main"><strong><svg class="thread-icon" aria-hidden="true"><use href="#ti-book"></use></svg>Книга учёта</strong><small>Прислать Excel в Telegram</small></span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <button id="btn-export-week-pdf" class="settings-link-row export-link-row" type="button">
+                    <span class="settings-link-main"><strong><svg class="thread-icon" aria-hidden="true"><use href="#ti-pdf"></use></svg>Расписание недели</strong><small>Прислать PDF в Telegram</small></span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-save-app-settings" class="primary-btn" type="button">Сохранить</button>
+                <button id="btn-cancel-app-settings" class="secondary-btn" type="button">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- СПРАВКА -->
+    <div id="help-overlay" class="hidden">
+        <div class="modal-content help-modal">
+            <header class="modal-header">
+                <button id="btn-back-help" class="icon-btn" type="button" aria-label="Назад в настройки"><svg class="thread-icon" aria-hidden="true"><use href="#ti-chevron-left"></use></svg></button>
+                <h2>Как пользоваться TEMLI</h2>
+                <button id="btn-close-help" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body help-body" data-i18n-ignore>
+                <p class="help-lead">Начните с одного занятия. Всё остальное можно настроить позже.</p>
+                <section class="help-start">
+                    <h3>Три шага для начала</h3>
+                    <ol class="help-step-list">
+                        <li><strong>Добавьте занятие</strong><span>Нажмите свободное время, укажите ученика, время, длительность и цену; сохраните.</span></li>
+                        <li><strong>Работайте из календаря</strong><span>Нажмите занятие для оплаты, переноса, связи и настроек урока.</span></li>
+                        <li><strong>Остальное — по необходимости</strong><span>Рабочие часы и «Мой бот» — в настройках справа вверху.</span></li>
+                    </ol>
+                </section>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-help-back-bottom" class="secondary-btn" type="button">Назад в настройки</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ДАННЫЕ ДЛЯ ЧЕКА -->
+    <div id="receipt-settings-overlay" class="hidden">
+        <div class="modal-content receipt-settings-modal">
+            <header class="modal-header">
+                <button id="btn-back-receipt-settings" class="icon-btn" type="button" aria-label="Назад"><svg class="thread-icon" aria-hidden="true"><use href="#ti-chevron-left"></use></svg></button>
+                <h2>Данные для чека</h2>
+                <button id="btn-close-receipt-settings" class="close-modal" type="button" aria-label="Закрыть"><svg class="thread-icon" aria-hidden="true"><use href="#ti-close"></use></svg></button>
+            </header>
+            <div class="modal-body">
+                <div class="settings-section receipt-fields-section">
+                    <label>Наименование / ИП</label><input type="text" id="settings-company_name" placeholder="Например: ИП Иванов Иван Иванович">
+                    <div class="compact-grid-two">
+                        <div><label>ИНН</label><input type="text" id="settings-inn" placeholder="ИНН"></div>
+                        <div><label>ОГРНИП</label><input type="text" id="settings-ogrnip" placeholder="ОГРНИП"></div>
+                    </div>
+                    <label>Адрес</label><input type="text" id="settings-address" placeholder="Адрес">
+                    <div class="compact-grid-two">
+                        <div><label>Телефон</label><input type="text" id="settings-phone" placeholder="Телефон"></div>
+                        <div><label>Email</label><input type="text" id="settings-email_sender" placeholder="Email"></div>
+                    </div>
+                    <label>Наименование услуги</label><input type="text" id="settings-service_name" placeholder="Например: Индивидуальное занятие">
+                    <div class="compact-grid-two">
+                        <div><label>Система налогообложения</label><input type="text" id="settings-tax_system" placeholder="ПСН / УСН"></div>
+                        <div><label>Сайт</label><input type="text" id="settings-website" placeholder="https://..."></div>
+                    </div>
+                    <label>Текст после оплаты</label><textarea id="settings-thanks_text" rows="2" placeholder="Спасибо за оплату!"></textarea>
+                </div>
+
+                <details class="settings-details">
+                    <summary>Банковские реквизиты</summary>
+                    <div class="details-body">
+                        <label>Получатель</label><input type="text" id="settings-recipient" placeholder="Получатель платежа">
+                        <label>Банк</label><input type="text" id="settings-bank_name" placeholder="Название банка">
+                        <div class="compact-grid-two">
+                            <div><label>БИК</label><input type="text" id="settings-bik" placeholder="БИК"></div>
+                            <div><label>Корр. счёт</label><input type="text" id="settings-corr_account" placeholder="Корреспондентский счёт"></div>
+                        </div>
+                        <label>Расчётный счёт</label><input type="text" id="settings-account_number" placeholder="Расчётный счёт">
+                        <label>Комментарий к оплате</label><textarea id="settings-payment_comment" rows="2" placeholder="Например: оплата занятий"></textarea>
+                    </div>
+                </details>
+
+                <details class="settings-details">
+                    <summary>Оформление чека</summary>
+                    <div class="details-body">
+                        <div class="receipt-file-row"><label>Эмблема / логотип</label><input type="file" id="settings-logo-file" accept="image/png,image/jpeg"><small>Сейчас: <span id="current-logo-name">не загружена</span></small></div>
+                        <div class="receipt-file-row"><label>Подпись</label><input type="file" id="settings-signature-file" accept="image/png,image/jpeg"><small>Сейчас: <span id="current-signature-name">не загружена</span></small></div>
+                        <div class="receipt-file-row"><label>QR-код</label><input type="file" id="settings-qrcode-file" accept="image/png,image/jpeg"><small>Сейчас: <span id="current-qrcode-name">не загружен</span></small></div>
+                    </div>
+                </details>
+            </div>
+            <div class="modal-actions">
+                <button id="btn-save-receipt-settings" class="primary-btn" type="button">Сохранить</button>
+                <button id="btn-cancel-receipt-settings" class="secondary-btn" type="button">Назад</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="startup.js?v=20260922-selfhost1"></script>
+</body>
+</html>

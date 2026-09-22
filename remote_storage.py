@@ -98,6 +98,25 @@ class RemoteJsonStorage:
             self._versions[path] = result.get("version")
         return result.get("data") if result.get("exists") else default
 
+    def read_json_batch(self, defaults):
+        """Read several JSON documents in one cross-region HTTP request."""
+        if not isinstance(defaults, dict) or not 1 <= len(defaults) <= 16:
+            raise RemoteStorageError("invalid_batch")
+        cleaned = {_clean_relative_path(path): default for path, default in defaults.items()}
+        result = self._request("/v1/json/read-batch", {"paths": list(cleaned)})
+        items = result.get("items")
+        if not isinstance(items, dict) or set(items) != set(cleaned):
+            raise RemoteStorageError("invalid_storage_response")
+        values = {}
+        with self._lock:
+            for path, default in cleaned.items():
+                item = items.get(path)
+                if not isinstance(item, dict):
+                    raise RemoteStorageError("invalid_storage_response")
+                self._versions[path] = item.get("version")
+                values[path] = item.get("data") if item.get("exists") else default
+        return values
+
     def write_json(self, path, data):
         path = _clean_relative_path(path)
         with self._lock:
