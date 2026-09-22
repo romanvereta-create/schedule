@@ -39,7 +39,7 @@ def _clean_relative_path(value):
 
 
 class RemoteJsonStorage:
-    def __init__(self, base_url, token, *, timeout=20):
+    def __init__(self, base_url, token, *, backup_read_token=None, timeout=20):
         parsed = urlsplit(str(base_url or "").strip().rstrip("/"))
         allow_http = os.getenv("TEMLI_STORAGE_ALLOW_HTTP", "false").lower() == "true"
         if parsed.scheme not in ({"https", "http"} if allow_http else {"https"}):
@@ -51,6 +51,11 @@ class RemoteJsonStorage:
             raise RemoteStorageError("TEMLI_STORAGE_TOKEN must contain at least 32 characters")
         self.base_url = parsed.geturl().rstrip("/")
         self.token = token
+        backup_read_token = str(backup_read_token or token)
+        if len(backup_read_token) < 32:
+            raise RemoteStorageError(
+                "TEMLI_STORAGE_BACKUP_READ_TOKEN must contain at least 32 characters")
+        self.backup_read_token = backup_read_token
         self.timeout = timeout
         self._versions = {}
         self._file_versions = {}
@@ -125,7 +130,7 @@ class RemoteJsonStorage:
         req = urllib.request.Request(
             self.base_url + "/v1/backups/" + quote(name, safe=""),
             method="GET",
-            headers={"Authorization": "Bearer " + self.token,
+            headers={"Authorization": "Bearer " + self.backup_read_token,
                      "Accept": "application/zip"},
         )
         try:
@@ -150,7 +155,7 @@ class RemoteJsonStorage:
         req = urllib.request.Request(
             self.base_url + endpoint,
             method="GET",
-            headers={"Authorization": "Bearer " + self.token,
+            headers={"Authorization": "Bearer " + self.backup_read_token,
                      "Accept": "application/json"},
         )
         try:
@@ -319,9 +324,16 @@ def version_for_client(value):
 def configured_remote_storage(environ=None):
     environ = os.environ if environ is None else environ
     url = str(environ.get("TEMLI_STORAGE_URL", "") or "").strip()
-    token = str(environ.get("TEMLI_STORAGE_TOKEN", "") or "")
+    legacy = str(environ.get("TEMLI_STORAGE_TOKEN", "") or "")
+    token = str(environ.get("TEMLI_STORAGE_APP_TOKEN", "") or legacy)
+    backup_read_token = str(
+        environ.get("TEMLI_STORAGE_BACKUP_READ_TOKEN", "") or legacy)
     if not url and not token:
         return None
     if not url or not token:
-        raise RemoteStorageError("TEMLI_STORAGE_URL and TEMLI_STORAGE_TOKEN must be set together")
-    return RemoteJsonStorage(url, token)
+        raise RemoteStorageError(
+            "TEMLI_STORAGE_URL and TEMLI_STORAGE_APP_TOKEN must be set together")
+    if not backup_read_token:
+        raise RemoteStorageError(
+            "TEMLI_STORAGE_BACKUP_READ_TOKEN is required with scoped storage credentials")
+    return RemoteJsonStorage(url, token, backup_read_token=backup_read_token)

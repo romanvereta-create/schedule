@@ -138,8 +138,11 @@ class AuditRegressionTests(unittest.TestCase):
             target.write_bytes(b"original image")
             bot.save_json(bot.SETTINGS_FILE, {"receipt_logo": "logo.png"})
             before = Path(bot.tenant_file(bot.SETTINGS_FILE)).read_bytes()
+            valid_image = io.BytesIO()
+            bot.Image.new("RGB", (2, 2), "white").save(valid_image, format="PNG")
+            valid_image.seek(0)
             with bot.flask_app.test_request_context(
-                method="POST", data={"asset_type": "logo", "file": (io.BytesIO(b"new image"), "new.png")},
+                method="POST", data={"asset_type": "logo", "file": (valid_image, "new.png")},
                 content_type="multipart/form-data"
             ), patch.object(bot.os, "replace", side_effect=OSError("simulated disk failure")):
                 with self.assertRaises(OSError):

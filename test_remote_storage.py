@@ -18,11 +18,15 @@ from unittest.mock import patch
 
 from werkzeug.serving import make_server
 
-from remote_storage import RemoteJsonStorage, RemoteStorageConflict, RemoteStorageError
+from remote_storage import (
+    RemoteJsonStorage, RemoteStorageConflict, RemoteStorageError,
+    configured_remote_storage,
+)
 from storage_server import (
     StorageServiceError,
     create_app,
     create_backup,
+    configured_storage_tokens,
     inspect_backup,
     restore_backup,
     version_for,
@@ -613,7 +617,7 @@ print('remote bot storage OK')
         self.assertEqual(self.client.get("/v1/backups").status_code, 401)
         self.assertEqual(self.client.get("/v1/backups/../secret.zip").status_code, 401)
 
-    def test_restore_requires_exact_confirmation_and_creates_safety_backup(self):
+    def test_restore_requires_one_time_challenge_and_creates_safety_backup(self):
         original = {"student-1": {"name": "До изменения"}}
         changed = {"student-2": {"name": "После изменения"}}
         self.assertEqual(
@@ -633,9 +637,11 @@ print('remote bot storage OK')
             changed,
         )
 
+        challenge = self.post(
+            "/v1/backups/" + name + "/restore-challenge", {}).get_json()
+        self.assertGreaterEqual(len(challenge["nonce"]), 32)
         restored = self.post("/v1/backups/" + name + "/restore", {
-            "apply": True,
-            "confirmation": "RESTORE " + name,
+            "apply": True, "nonce": challenge["nonce"],
         })
         self.assertEqual(restored.status_code, 200)
         self.assertTrue(restored.get_json()["safety_backup"].endswith("-pre-restore.zip"))
@@ -647,6 +653,10 @@ print('remote bot storage OK')
             "/v1/backups", headers=self.headers,
         ).get_json()["backups"]}
         self.assertIn("pre-restore", reasons)
+        replay = self.post("/v1/backups/" + name + "/restore", {
+            "apply": True, "nonce": challenge["nonce"],
+        })
+        self.assertEqual(replay.status_code, 409)
 
     def test_tampered_backup_is_rejected_without_changing_storage(self):
         self.backups.mkdir(parents=True, exist_ok=True)
@@ -662,13 +672,73 @@ print('remote bot storage OK')
             archive.writestr("manifest.json", json.dumps(manifest))
             archive.writestr("data/students.json", b"{}")
         before = (self.root / "students.json").read_bytes()
-        response = self.post("/v1/backups/" + name + "/restore", {
-            "apply": True,
-            "confirmation": "RESTORE " + name,
-        })
+        response = self.post(
+            "/v1/backups/" + name + "/restore-challenge", {})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["code"], "invalid_backup")
         self.assertEqual((self.root / "students.json").read_bytes(), before)
+
+    def test_scoped_tokens_enforce_least_privilege(self):
+        app_token = "app-" + "a" * 40
+        backup_token = "backup-" + "b" * 40
+        admin_token = "admin-" + "c" * 40
+        scoped = create_app(
+            Path(self.temp.name) / "scoped", initialize=True,
+            backups=Path(self.temp.name) / "scoped-backups",
+            app_token=app_token, backup_read_token=backup_token,
+            admin_token=admin_token,
+        ).test_client()
+        headers = lambda token: {"Authorization": "Bearer " + token}
+        created = scoped.post("/v1/backups", json={}, headers=headers(app_token))
+        self.assertEqual(created.status_code, 200)
+        name = created.get_json()["name"]
+
+        self.assertEqual(scoped.get("/v1/backups", headers=headers(app_token)).status_code, 401)
+        self.assertEqual(scoped.get("/v1/backups", headers=headers(backup_token)).status_code, 200)
+        self.assertEqual(scoped.post(
+            "/v1/json/read", json={"path": "students.json"},
+            headers=headers(backup_token)).status_code, 401)
+        self.assertEqual(scoped.post(
+            "/v1/backups/" + name + "/restore-challenge", json={},
+            headers=headers(app_token)).status_code, 401)
+        self.assertEqual(scoped.post(
+            "/v1/backups/" + name + "/restore-challenge", json={},
+            headers=headers(backup_token)).status_code, 401)
+        challenge = scoped.post(
+            "/v1/backups/" + name + "/restore-challenge", json={},
+            headers=headers(admin_token))
+        self.assertEqual(challenge.status_code, 200)
+        nonce = challenge.get_json()["nonce"]
+        self.assertEqual(scoped.post(
+            "/v1/backups/" + name + "/restore", json={"apply": True, "nonce": nonce},
+            headers=headers(backup_token)).status_code, 401)
+        self.assertEqual(scoped.post(
+            "/v1/backups/" + name + "/restore", json={"apply": True, "nonce": nonce},
+            headers=headers(admin_token)).status_code, 200)
+
+    def test_scoped_environment_resolution_and_legacy_fallback(self):
+        legacy = "legacy-" + "x" * 40
+        self.assertEqual(set(configured_storage_tokens({"TEMLI_STORAGE_TOKEN": legacy}).values()),
+                         {legacy})
+        values = configured_storage_tokens({
+            "TEMLI_STORAGE_APP_TOKEN": "a" * 32,
+            "TEMLI_STORAGE_BACKUP_READ_TOKEN": "b" * 32,
+            "TEMLI_STORAGE_ADMIN_TOKEN": "c" * 32,
+        })
+        self.assertEqual(values, {"app": "a" * 32, "backup_read": "b" * 32,
+                                  "admin": "c" * 32})
+        configured = configured_remote_storage({
+            "TEMLI_STORAGE_URL": "https://storage.example",
+            "TEMLI_STORAGE_APP_TOKEN": "a" * 32,
+            "TEMLI_STORAGE_BACKUP_READ_TOKEN": "b" * 32,
+        })
+        self.assertEqual(configured.token, "a" * 32)
+        self.assertEqual(configured.backup_read_token, "b" * 32)
+        with self.assertRaisesRegex(RemoteStorageError, "BACKUP_READ_TOKEN"):
+            configured_remote_storage({
+                "TEMLI_STORAGE_URL": "https://storage.example",
+                "TEMLI_STORAGE_APP_TOKEN": "a" * 32,
+            })
 
     def test_backup_rotation_keeps_only_newest_archives(self):
         for reason in ("one", "two", "three"):

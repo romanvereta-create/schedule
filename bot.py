@@ -9,6 +9,7 @@ DEPENDENCIES = [
     ("Flask-Cors", "flask_cors"),
     ("fpdf==1.7.2", "fpdf"),
     ("openpyxl==3.1.2", "openpyxl"),
+    ("Pillow>=10,<12", "PIL"),
     ("cryptography>=44,<47", "cryptography"),
 ]
 
@@ -56,6 +57,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppI
 from telegram.ext import Application, CommandHandler, ContextTypes
 from fpdf import FPDF
 import openpyxl
+from PIL import Image, ImageOps, UnidentifiedImageError
 from openpyxl.styles import Font, Alignment, Border, Side
 
 from persistent_storage import resolve_storage_root
@@ -118,6 +120,25 @@ OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
 ALLOW_UNAUTHENTICATED = os.getenv("ALLOW_UNAUTHENTICATED", "false").lower() == "true"
 RECEIPTS_DIR = project_path("receipts")
+
+
+def _bounded_env_int(name, default, minimum, maximum):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+INIT_DATA_MAX_AGE_SECONDS = _bounded_env_int(
+    "TEMLI_INIT_DATA_TTL_SECONDS", 15 * 60, 5 * 60, 60 * 60
+)
+MAX_REQUEST_BYTES = _bounded_env_int(
+    "TEMLI_MAX_REQUEST_BYTES", 8 * 1024 * 1024, 1024 * 1024, 16 * 1024 * 1024
+)
+MAX_IMAGE_PIXELS = _bounded_env_int(
+    "TEMLI_MAX_IMAGE_PIXELS", 20_000_000, 1_000_000, 40_000_000
+)
 RECEIPT_ASSETS_DIR = project_path("receipt_assets")
 BOOK_FILE = project_path("book.xlsx")
 FONT_REGULAR = os.path.join(CODE_DIR, "DejaVuSansCondensed.ttf")
@@ -1217,7 +1238,9 @@ def validate_init_data(init_data):
             return False, None
 
         auth_date = int(parsed.get("auth_date", "0"))
-        if auth_date <= 0 or abs(int(time.time()) - auth_date) > 86400:
+        now = int(time.time())
+        # Reject stale sessions and timestamps substantially in the future.
+        if auth_date <= 0 or auth_date > now + 30 or now - auth_date > INIT_DATA_MAX_AGE_SECONDS:
             return False, None
 
         data_check_string = "\n".join(f"{key}={parsed[key]}" for key in sorted(parsed))
@@ -1260,6 +1283,7 @@ def next_series_id():
 
 
 flask_app = Flask(__name__)
+flask_app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 CORS(
     flask_app,
     resources={r"/api/*": {"origins": [WEBAPP_ORIGIN]}},
@@ -1272,6 +1296,71 @@ BOT3_FRONTEND_FILES = {
     "startup.js", "styles.css", "support.js", "ux.css", "ux.js",
     "locales/en.js", "vendor/telegram-web-app.js",
 }
+
+_RATE_LIMITS = {
+    "read": (_bounded_env_int("TEMLI_RATE_READ_PER_MINUTE", 180, 30, 1200), 60.0),
+    "write": (_bounded_env_int("TEMLI_RATE_WRITE_PER_MINUTE", 60, 10, 600), 60.0),
+    "export": (_bounded_env_int("TEMLI_RATE_EXPORT_PER_MINUTE", 10, 2, 60), 60.0),
+}
+_RATE_EXPORT_PATHS = {"/api/download_book", "/api/export_week_pdf"}
+_rate_lock = threading.Lock()
+_rate_windows = {}
+
+
+def _request_rate_class():
+    if request.path in _RATE_EXPORT_PATHS:
+        return "export"
+    return "read" if request.method in {"GET", "HEAD"} else "write"
+
+
+def _rate_limit_key(rate_class):
+    # Prefer the signed request's public hash. This keeps users separate behind
+    # Traefik without retaining the raw Telegram header or trusting spoofable
+    # forwarding headers. Invalid/missing payloads fall back to the peer IP.
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    try:
+        candidate = dict(parse_qsl(init_data, keep_blank_values=True)).get("hash", "")
+    except (TypeError, ValueError):
+        candidate = ""
+    source = candidate if re.fullmatch(r"[0-9a-fA-F]{64}", candidate or "") else (request.remote_addr or "unknown")
+    return rate_class, hashlib.sha256(source.encode("utf-8", "replace")).digest()[:12]
+
+
+def _rate_limit_exceeded(rate_class):
+    limit, window_seconds = _RATE_LIMITS[rate_class]
+    now = time.monotonic()
+    key = _rate_limit_key(rate_class)
+    with _rate_lock:
+        started, count = _rate_windows.get(key, (now, 0))
+        if now - started >= window_seconds:
+            started, count = now, 0
+        count += 1
+        _rate_windows[key] = (started, count)
+        # Opportunistic bounded cleanup protects a long-running process.
+        if len(_rate_windows) > 4096:
+            cutoff = now - window_seconds * 2
+            for stale_key, (stale_started, _stale_count) in list(_rate_windows.items()):
+                if stale_started < cutoff:
+                    _rate_windows.pop(stale_key, None)
+        return count > limit
+
+
+@flask_app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' "
+        "https://web.telegram.org https://*.telegram.org",
+    )
+    return response
 
 
 def send_bot3_frontend_file(filename):
@@ -1303,12 +1392,22 @@ def handle_data_corruption(error):
     return jsonify({"status": "error", "message": str(error)}), 503
 
 
+@flask_app.errorhandler(413)
+def handle_request_too_large(_error):
+    return jsonify({"status": "error", "message": "Запрос слишком большой."}), 413
+
+
 @flask_app.before_request
 def protect_api():
     if request.method == "OPTIONS" or request.path in {"/api/health", "/api/ready"}:
         return None
     if not request.path.startswith("/api/"):
         return None
+
+    if _rate_limit_exceeded(_request_rate_class()):
+        response = jsonify({"status": "error", "message": "Слишком много запросов. Повторите позже."})
+        response.headers["Retry-After"] = "60"
+        return response, 429
 
     g.remote_cache_token = REMOTE_REQUEST_CACHE.set({})
 
@@ -2231,6 +2330,45 @@ def update_settings_data(data):
     return jsonify({"status": "ok", "settings": settings})
 
 
+def normalize_uploaded_image(raw):
+    """Decode an uploaded raster image and return safe, metadata-free bytes."""
+    if not raw:
+        raise ValueError("Пустой файл изображения.")
+    try:
+        with Image.open(io.BytesIO(raw)) as probe:
+            actual_format = str(probe.format or "").upper()
+            if actual_format not in {"PNG", "JPEG"}:
+                raise ValueError("Разрешены только изображения PNG и JPEG.")
+            width, height = probe.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                raise ValueError("Слишком большое разрешение изображения.")
+            probe.verify()
+
+        with Image.open(io.BytesIO(raw)) as decoded:
+            decoded.load()
+            image = ImageOps.exif_transpose(decoded)
+            output = io.BytesIO()
+            has_alpha = image.mode in {"RGBA", "LA"} or (
+                image.mode == "P" and "transparency" in image.info
+            )
+            if actual_format == "PNG" or has_alpha:
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if has_alpha else "RGB")
+                image.save(output, format="PNG", optimize=True)
+                extension = ".png"
+            else:
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                image.save(output, format="JPEG", quality=90, optimize=True)
+                extension = ".jpg"
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("Файл не является корректным изображением PNG или JPEG.") from exc
+    normalized = output.getvalue()
+    if len(normalized) > 5 * 1024 * 1024:
+        raise ValueError("Изображение после обработки больше 5 МБ.")
+    return extension, normalized
+
+
 @flask_app.route("/api/upload_receipt_asset", methods=["POST"])
 def upload_receipt_asset():
     asset_type = str(request.form.get("asset_type", "")).strip()
@@ -2250,9 +2388,10 @@ def upload_receipt_asset():
     if len(raw) > 5 * 1024 * 1024:
         return jsonify({"status": "error", "message": "Файл больше 5 МБ."}), 400
 
-    ext = os.path.splitext(uploaded.filename)[1].lower()
-    if ext not in {".png", ".jpg", ".jpeg"}:
-        return jsonify({"status": "error", "message": "Разрешены PNG, JPG и JPEG."}), 400
+    try:
+        ext, raw = normalize_uploaded_image(raw)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
 
     return save_receipt_asset(asset_type, ext, raw, mapping[asset_type])
 

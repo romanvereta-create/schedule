@@ -8,8 +8,10 @@ import hmac
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -457,11 +459,49 @@ def start_backup_worker(root, directory, lock, *, interval, retention):
     return stop, thread
 
 
-def create_app(root, token, *, initialize=False, backups=None, backup_retention=30):
+def _validated_token(value, variable):
+    value = str(value or "")
+    if len(value) < 32:
+        raise StorageServiceError(variable + " must contain at least 32 characters")
+    return value
+
+
+def configured_storage_tokens(environ=None):
+    """Resolve scoped credentials, temporarily falling back to the legacy token.
+
+    TEMLI_STORAGE_APP_TOKEN authorizes application reads/writes and backup
+    creation; TEMLI_STORAGE_BACKUP_READ_TOKEN only lists/downloads backups;
+    TEMLI_STORAGE_ADMIN_TOKEN only requests and applies restore challenges.
+    TEMLI_STORAGE_TOKEN remains a migration fallback and should be removed once
+    all three scoped variables have been deployed.
+    """
+    environ = os.environ if environ is None else environ
+    legacy = str(environ.get("TEMLI_STORAGE_TOKEN", "") or "")
+    values = {
+        "app": str(environ.get("TEMLI_STORAGE_APP_TOKEN", "") or legacy),
+        "backup_read": str(environ.get("TEMLI_STORAGE_BACKUP_READ_TOKEN", "") or legacy),
+        "admin": str(environ.get("TEMLI_STORAGE_ADMIN_TOKEN", "") or legacy),
+    }
+    variables = {
+        "app": "TEMLI_STORAGE_APP_TOKEN",
+        "backup_read": "TEMLI_STORAGE_BACKUP_READ_TOKEN",
+        "admin": "TEMLI_STORAGE_ADMIN_TOKEN",
+    }
+    return {scope: _validated_token(value, variables[scope])
+            for scope, value in values.items()}
+
+
+def create_app(root, token=None, *, app_token=None, backup_read_token=None,
+               admin_token=None, initialize=False, backups=None,
+               backup_retention=30):
     root = Path(root).resolve()
-    token = str(token or "")
-    if len(token) < 32:
-        raise StorageServiceError("TEMLI_STORAGE_TOKEN must contain at least 32 characters")
+    # Passing ``token`` keeps old deployments and callers working. Explicit
+    # scoped credentials take precedence and never get returned in responses.
+    legacy = str(token or "")
+    app_token = _validated_token(app_token or legacy, "TEMLI_STORAGE_APP_TOKEN")
+    backup_read_token = _validated_token(
+        backup_read_token or legacy, "TEMLI_STORAGE_BACKUP_READ_TOKEN")
+    admin_token = _validated_token(admin_token or legacy, "TEMLI_STORAGE_ADMIN_TOKEN")
     if initialize and not (root / READY_FILE).exists():
         initialize_empty(root)
     validate_root(root)
@@ -478,13 +518,27 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     # Backup archives are immutable after atomic creation. Cache the last
     # verified signature so frequent readiness probes do not reread the ZIP.
     backup_verification_cache = {"signature": None}
+    restore_challenges = {}
+    restore_challenge_lock = threading.Lock()
+
+    def required_scope():
+        endpoint = request.endpoint or ""
+        if endpoint in {"backup_restore_challenge", "backup_restore"}:
+            return "admin"
+        if endpoint in {"backup_list", "backup_download"}:
+            return "backup_read"
+        return "app"
 
     @app.before_request
     def authenticate():
         if request.path == "/health":
             return None
         supplied = request.headers.get("Authorization", "")
-        expected = "Bearer " + token
+        expected = "Bearer " + {
+            "app": app_token,
+            "backup_read": backup_read_token,
+            "admin": admin_token,
+        }[required_scope()]
         if not hmac.compare_digest(supplied, expected):
             return jsonify(status="error", code="unauthorized"), 401
         if request.method in {"POST", "PUT", "PATCH"} and not request.is_json:
@@ -497,7 +551,9 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
                        capabilities=['json', 'json-batch-v1', 'files-v1',
                                      'payment-tx-v1', 'backup-v2',
                                      'authenticated-status-v1',
-                                     'backup-integrity-status-v1'])
+                                     'backup-integrity-status-v1',
+                                     'scoped-auth-v1',
+                                     'restore-challenge-v1'])
 
     @app.post("/v1/status")
     def authenticated_status():
@@ -846,12 +902,14 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     @app.post("/v1/backups/<name>/restore")
     def backup_restore(name):
         body = request.get_json(silent=True) or {}
-        expected_confirmation = "RESTORE " + name
-        if body.get("apply") is not True or body.get("confirmation") != expected_confirmation:
+        nonce = str(body.get("nonce", ""))
+        with restore_challenge_lock:
+            challenge = restore_challenges.pop(nonce, None)
+        if (body.get("apply") is not True or challenge is None
+                or challenge["name"] != name or challenge["expires"] < time.monotonic()):
             return jsonify(
                 status="error",
                 code="restore_confirmation_required",
-                confirmation=expected_confirmation,
             ), 409
         with lock:
             try:
@@ -869,6 +927,23 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
                 safety_backup=safety.name,
             )
 
+    @app.post("/v1/backups/<name>/restore-challenge")
+    def backup_restore_challenge(name):
+        try:
+            path = _backup_path(backups, name)
+            inspect_backup(path)
+        except StorageServiceError as error:
+            status = 404 if str(error) == "backup_not_found" else 400
+            return jsonify(status="error", code=str(error)), status
+        now = time.monotonic()
+        with restore_challenge_lock:
+            for old_nonce, value in list(restore_challenges.items()):
+                if value["expires"] < now:
+                    restore_challenges.pop(old_nonce, None)
+            nonce = secrets.token_urlsafe(32)
+            restore_challenges[nonce] = {"name": name, "expires": now + 300}
+        return jsonify(status="ok", nonce=nonce, expires_in_seconds=300)
+
     return app
 
 
@@ -876,7 +951,7 @@ def main():
     from waitress import create_server
 
     root = storage_root()
-    token = os.getenv("TEMLI_STORAGE_TOKEN", "")
+    tokens = configured_storage_tokens()
     initialize = os.getenv("TEMLI_STORAGE_INITIALIZE_EMPTY", "false").lower() == "true"
     backups = backup_root(root)
     retention = int(os.getenv("TEMLI_BACKUP_RETENTION", "30"))
@@ -887,7 +962,9 @@ def main():
         raise StorageServiceError("TEMLI_BACKUP_INTERVAL_SECONDS must be 0 or at least 300")
     app = create_app(
         root,
-        token,
+        app_token=tokens["app"],
+        backup_read_token=tokens["backup_read"],
+        admin_token=tokens["admin"],
         initialize=initialize,
         backups=backups,
         backup_retention=retention,
