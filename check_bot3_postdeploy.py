@@ -122,6 +122,18 @@ def validate_bot_ready(payload: dict[str, Any]) -> dict[str, Any]:
         raise CheckError("latest backup is missing or older than 8 hours")
     if payload.get("latest_backup_verified") is not True:
         raise CheckError("latest backup is not verified")
+    if payload.get("replica_enabled") is not True:
+        raise CheckError("offsite backup replica is not enabled")
+    replica_count = payload.get("replica_count")
+    if isinstance(replica_count, bool) or not isinstance(replica_count, int) or replica_count <= 0:
+        raise CheckError("field 'replica_count' must be a positive integer")
+    replica_age = payload.get("latest_replica_age_seconds")
+    if (
+        isinstance(replica_age, bool)
+        or not isinstance(replica_age, int)
+        or not 0 <= replica_age <= MAX_BACKUP_AGE_SECONDS
+    ):
+        raise CheckError("offsite backup replica is missing or older than 8 hours")
 
     return {
         "status": "ok",
@@ -129,6 +141,8 @@ def validate_bot_ready(payload: dict[str, Any]) -> dict[str, Any]:
         "backup_count": backup_count,
         "latest_backup_age_seconds": backup_age,
         "latest_backup_verified": True,
+        "replica_count": replica_count,
+        "latest_replica_age_seconds": replica_age,
         "storage_latency_ms": latency,
     }
 

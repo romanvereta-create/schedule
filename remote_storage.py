@@ -17,7 +17,7 @@ import uuid
 import urllib.error
 import urllib.request
 from pathlib import PurePosixPath
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 
 class RemoteStorageError(RuntimeError):
@@ -108,6 +108,68 @@ class RemoteJsonStorage:
             "service": str(result.get("service", "")),
             "backup": backup,
         }
+
+    def list_backups(self):
+        """List verified server backups without exposing authentication details."""
+        result = self._get_json("/v1/backups")
+        backups = result.get("backups")
+        if not isinstance(backups, list):
+            raise RemoteStorageError("invalid_storage_response")
+        return backups
+
+    def download_backup(self, name, *, max_bytes=512 * 1024 * 1024):
+        """Download one archive with a strict response-size ceiling."""
+        name = str(name or "")
+        if not name or "/" in name or "\\" in name or name in (".", ".."):
+            raise RemoteStorageError("invalid_backup_name")
+        req = urllib.request.Request(
+            self.base_url + "/v1/backups/" + quote(name, safe=""),
+            method="GET",
+            headers={"Authorization": "Bearer " + self.token,
+                     "Accept": "application/zip"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=ssl.create_default_context()) as response:
+                declared = response.headers.get("Content-Length")
+                if declared and int(declared) > max_bytes:
+                    raise RemoteStorageError("storage_response_too_large")
+                raw = response.read(max_bytes + 1)
+        except RemoteStorageError:
+            raise
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise RemoteStorageError("backup_download_failed") from None
+        except (OSError, ValueError):
+            raise RemoteStorageError("storage_unavailable") from None
+        if len(raw) > max_bytes:
+            raise RemoteStorageError("storage_response_too_large")
+        return raw
+
+    def _get_json(self, endpoint):
+        req = urllib.request.Request(
+            self.base_url + endpoint,
+            method="GET",
+            headers={"Authorization": "Bearer " + self.token,
+                     "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout,
+                                        context=ssl.create_default_context()) as response:
+                raw = response.read(1024 * 1024 + 1)
+                if len(raw) > 1024 * 1024:
+                    raise RemoteStorageError("storage_response_too_large")
+                result = json.loads(raw)
+        except RemoteStorageError:
+            raise
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise RemoteStorageError("remote_error") from None
+        except (OSError, ValueError, json.JSONDecodeError):
+            raise RemoteStorageError("storage_unavailable") from None
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            raise RemoteStorageError("invalid_storage_response")
+        return result
 
     def read_json_batch(self, defaults):
         """Read several JSON documents in one cross-region HTTP request."""

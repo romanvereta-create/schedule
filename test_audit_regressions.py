@@ -105,6 +105,7 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(payload["backup_count"], 3)
         self.assertEqual(payload["latest_backup_age_seconds"], 120)
         self.assertTrue(payload["latest_backup_verified"])
+        self.assertFalse(payload["replica_enabled"])
 
     def test_recovery_marker_removed_while_waiting_is_not_corruption(self):
         with bot.teacher_scope("audit"):

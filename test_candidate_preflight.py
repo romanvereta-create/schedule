@@ -19,6 +19,7 @@ GOOD_ENV = {
     "SCHEDULE_WEBAPP_ORIGIN": "https://candidate.example",
     "TEMLI_STORAGE_URL": "https://storage-candidate.example/",
     "TEMLI_STORAGE_TOKEN": "s" * 32,
+    "TEMLI_REPLICA_DIR": "/app/data/temli-storage-replica",
     "ALLOW_UNAUTHENTICATED": "false",
 }
 

@@ -2010,6 +2010,16 @@ def ready():
                 backup = remote["backup"]
                 if backup.get("latest_verified") is not True:
                     raise ValueError("latest backup is not verified")
+                replica = None
+                replica_dir = os.getenv("TEMLI_REPLICA_DIR", "").strip()
+                if replica_dir:
+                    from backup_replica import configured_replica_dir, replica_status
+                    resolved_replica_dir = configured_replica_dir()
+                    replica = replica_status(resolved_replica_dir)
+                    if (replica["count"] < 1
+                            or replica["latest_age_seconds"] is None
+                            or replica["latest_age_seconds"] > 8 * 60 * 60):
+                        raise ValueError("offsite backup replica is stale")
                 payload = {
                     "status": "ok",
                     "service": "temli-bot3",
@@ -2018,6 +2028,11 @@ def ready():
                     "backup_count": int(backup.get("count", 0) or 0),
                     "latest_backup_age_seconds": backup.get("latest_age_seconds"),
                     "latest_backup_verified": True,
+                    "replica_enabled": replica is not None,
+                    "replica_count": replica["count"] if replica else None,
+                    "latest_replica_age_seconds": (
+                        replica["latest_age_seconds"] if replica else None
+                    ),
                 }
             else:
                 payload = {
@@ -2025,6 +2040,9 @@ def ready():
                     "storage": "local", "storage_latency_ms": 0,
                     "backup_count": None, "latest_backup_age_seconds": None,
                     "latest_backup_verified": None,
+                    "replica_enabled": False,
+                    "replica_count": None,
+                    "latest_replica_age_seconds": None,
                 }
             status_code = 200
         except (RemoteStorageError, TypeError, ValueError):

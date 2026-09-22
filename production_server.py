@@ -44,11 +44,20 @@ def run(host):
         raise RuntimeError("SCHEDULE_BOT_TOKEN is required")
     if host.ALLOW_UNAUTHENTICATED:
         raise RuntimeError("Production requires ALLOW_UNAUTHENTICATED=false")
+    bootstrap_retries = int(os.getenv("TELEGRAM_BOOTSTRAP_RETRIES", "10"))
+    if bootstrap_retries < 0 or bootstrap_retries > 100:
+        raise RuntimeError("TELEGRAM_BOOTSTRAP_RETRIES must be between 0 and 100")
     remote = getattr(host, "REMOTE_STORAGE", None)
+    replica_dir = None
+    replica_settings = None
     if remote is not None:
         # Fail before starting Telegram polling if the Russian storage cannot
         # be reached or authenticated.
         remote.read_json("teacher_registry.json", {})
+        from backup_replica import configured_replica_dir, replica_settings as read_replica_settings
+        replica_dir = configured_replica_dir()
+        if replica_dir is not None:
+            replica_settings = read_replica_settings()
     from automatic_backup import start_worker
     with single_instance(host.BASE_DIR):
         os.makedirs(host.RECEIPT_ASSETS_DIR, exist_ok=True)
@@ -66,17 +75,31 @@ def run(host):
                     # A dead HTTP loop must not leave a seemingly healthy polling process.
                     os.kill(os.getpid(), signal.SIGTERM)
         thread = threading.Thread(target=serve, name="temli-http", daemon=True)
+        replica_stop = replica_thread = None
         try:
             thread.start()
             if remote is None:
                 start_worker(host)
             else:
                 print("TEMLI automatic backup: delegated to remote storage", flush=True)
+                if replica_dir is not None:
+                    from backup_replica import start_worker as start_replica_worker
+                    replica_stop, replica_thread = start_replica_worker(
+                        remote, replica_dir,
+                        interval=replica_settings["interval"],
+                        retention=replica_settings["retention"],
+                    )
+                    print("TEMLI backup replica: enabled", flush=True)
             print("TEMLI production: Waitress; 1 process, 4 HTTP threads", flush=True)
             print("TEMLI storage: " + host.BASE_DIR, flush=True)
-            app.run_polling()
+            print("TEMLI Telegram bootstrap retries: " + str(bootstrap_retries), flush=True)
+            app.run_polling(bootstrap_retries=bootstrap_retries)
         finally:
             stopping.set()
+            if replica_stop is not None:
+                replica_stop.set()
+            if replica_thread is not None:
+                replica_thread.join(timeout=5)
             server.close()
             server.task_dispatcher.shutdown()
             thread.join(timeout=5)

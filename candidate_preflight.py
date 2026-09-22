@@ -28,6 +28,7 @@ REQUIRED_ENV = (
     "SCHEDULE_WEBAPP_ORIGIN",
     "TEMLI_STORAGE_URL",
     "TEMLI_STORAGE_TOKEN",
+    "TEMLI_REPLICA_DIR",
     "ALLOW_UNAUTHENTICATED",
 )
 
@@ -197,6 +198,15 @@ def check_environment(environ: Mapping[str, str]) -> list[Result]:
         )
     else:
         results.append(_ok("storage_token_format", "storage token format is valid"))
+
+    replica_dir = str(environ.get("TEMLI_REPLICA_DIR", "")).strip()
+    if not replica_dir.startswith("/app/data/") or ".." in replica_dir.split("/"):
+        results.append(_error(
+            "replica_directory",
+            "TEMLI_REPLICA_DIR must be inside the persistent /app/data directory",
+        ))
+    else:
+        results.append(_ok("replica_directory", "offsite replica directory is persistent"))
 
     webapp = _https_url(str(environ.get("SCHEDULE_WEBAPP_URL", "")))
     if webapp is None or webapp.path != "/app/":

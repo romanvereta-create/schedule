@@ -23,6 +23,9 @@ GOOD_RESPONSES = {
         "backup_count": 12,
         "latest_backup_age_seconds": 786,
         "latest_backup_verified": True,
+        "replica_enabled": True,
+        "replica_count": 12,
+        "latest_replica_age_seconds": 700,
     },
     "/health": {
         "status": "ok",
@@ -77,6 +80,9 @@ class PostDeployCheckTests(unittest.TestCase):
             {"latest_backup_age_seconds": -1},
             {"latest_backup_age_seconds": smoke.MAX_BACKUP_AGE_SECONDS + 1},
             {"latest_backup_verified": False},
+            {"replica_enabled": False},
+            {"replica_count": 0},
+            {"latest_replica_age_seconds": smoke.MAX_BACKUP_AGE_SECONDS + 1},
         ):
             with self.subTest(changed=changed):
                 payload = GOOD_RESPONSES["/api/ready"].copy()
