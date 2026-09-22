@@ -89,7 +89,7 @@ SETTINGS_FILE = project_path("settings.json")
 WEBAPP_URL = os.getenv(
     "SCHEDULE_WEBAPP_URL",
     "https://romanvereta-create.github.io/schedule-mini-app/",
-)
+).strip()
 WEBAPP_ORIGIN = os.getenv("SCHEDULE_WEBAPP_ORIGIN", "https://romanvereta-create.github.io")
 OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
@@ -382,6 +382,29 @@ def current_receipt_assets_dir():
     return tenant_file(RECEIPT_ASSETS_DIR)
 
 
+def _remote_relative_path(path):
+    """Map a scratch path to the same tenant-relative path on Russian storage."""
+    relative = os.path.relpath(os.path.abspath(path), BASE_DIR).replace(os.sep, "/")
+    if relative == ".." or relative.startswith("../"):
+        raise RemoteStorageError("invalid_path")
+    return relative
+
+
+def _atomic_local_bytes(path, raw):
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="temli_asset_", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            target.write(raw)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
 def load_json(filename, default=None):
     path = tenant_file(filename) if filename in {DATA_FILE, STUDENTS_FILE, SETTINGS_FILE} else filename
     return _load_json_raw(path, default)
@@ -575,6 +598,18 @@ def get_receipt_asset_path(settings, key):
     if not filename:
         return ""
     path = os.path.join(current_receipt_assets_dir(), os.path.basename(filename))
+    if REMOTE_STORAGE:
+        try:
+            raw = REMOTE_STORAGE.read_file(_remote_relative_path(path))
+        except RemoteStorageError as exc:
+            raise DataCorruptionError(
+                f"Не удалось прочитать файл из удалённого хранилища ({exc})."
+            ) from exc
+        if raw is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return ""
+        _atomic_local_bytes(path, raw)
     return path if os.path.exists(path) else ""
 
 
@@ -670,8 +705,6 @@ def _receipt_has_any(settings, keys):
 
 
 def generate_receipt_pdf(settings, client_name, amount, lesson_id, receipt_number=None, created_at=None, service_name_override=None):
-    if REMOTE_STORAGE:
-        raise RuntimeError("Бинарное хранилище тестового стенда ещё не подключено.")
     os.makedirs(current_receipts_dir(), exist_ok=True)
     now = created_at or receipt_now()
     receipt_number = receipt_number or next_receipt_number(now)
@@ -1741,11 +1774,6 @@ def download_book():
 
 @flask_app.route("/api/export_week_pdf", methods=["POST"])
 def export_week_pdf():
-    if REMOTE_STORAGE:
-        return jsonify({
-            "status": "error",
-            "message": "Экспорт PDF временно отключён на тестовом стенде удалённого хранения.",
-        }), 503
     data = request.get_json() or {}
     week_start = str(data.get("week_start", "")).strip()
     if not week_start:
@@ -1942,11 +1970,6 @@ def update_settings_data(data):
 
 @flask_app.route("/api/upload_receipt_asset", methods=["POST"])
 def upload_receipt_asset():
-    if REMOTE_STORAGE:
-        return jsonify({
-            "status": "error",
-            "message": "Загрузка файлов временно отключена на тестовом стенде удалённого хранения.",
-        }), 503
     asset_type = str(request.form.get("asset_type", "")).strip()
     mapping = {
         "logo": "receipt_logo",
@@ -1973,29 +1996,50 @@ def upload_receipt_asset():
 
 @serialized_data
 def save_receipt_asset(asset_type, ext, raw, setting_key):
-    if REMOTE_STORAGE:
-        raise RuntimeError("Бинарное хранилище тестового стенда ещё не подключено.")
     # Request body is already read; a slow upload must not hold the data lock.
     os.makedirs(current_receipt_assets_dir(), exist_ok=True)
     filename = f"{asset_type}{ext}"
     destination = os.path.join(current_receipt_assets_dir(), filename)
-    fd, temporary = tempfile.mkstemp(prefix="asset_", suffix=".tmp", dir=current_receipt_assets_dir())
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(raw)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary, destination)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
+    if REMOTE_STORAGE:
+        relative = _remote_relative_path(destination)
+        try:
+            previous = REMOTE_STORAGE.read_file(relative)
+            REMOTE_STORAGE.write_file(relative, raw)
+            try:
+                settings = load_settings()
+                settings[setting_key] = filename
+                save_json(SETTINGS_FILE, settings)
+            except BaseException:
+                if previous is None:
+                    REMOTE_STORAGE.delete_file(relative)
+                else:
+                    REMOTE_STORAGE.write_file(relative, previous)
+                raise
+            _atomic_local_bytes(destination, raw)
+        except RemoteStorageError as exc:
+            raise DataCorruptionError(
+                f"Не удалось записать файл в удалённое хранилище ({exc})."
+            ) from exc
+    else:
+        _atomic_local_bytes(destination, raw)
+        settings = load_settings()
+        settings[setting_key] = filename
+        save_json(SETTINGS_FILE, settings)
 
-    settings = load_settings()
-    settings[setting_key] = filename
-    save_json(SETTINGS_FILE, settings)
     for old_ext in (".png", ".jpg", ".jpeg"):
         old_path = os.path.join(current_receipt_assets_dir(), f"{asset_type}{old_ext}")
-        if old_path != destination and os.path.exists(old_path):
+        if old_path == destination:
+            continue
+        if REMOTE_STORAGE:
+            try:
+                old_relative = _remote_relative_path(old_path)
+                if REMOTE_STORAGE.read_file(old_relative) is not None:
+                    REMOTE_STORAGE.delete_file(old_relative)
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Файл сохранён, но старую версию удалить не удалось ({exc})."
+                ) from exc
+        if os.path.exists(old_path):
             os.remove(old_path)
     return jsonify({"status": "ok", "settings": settings, "filename": filename})
 

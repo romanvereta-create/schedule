@@ -7,6 +7,8 @@ the same semantics as the local filesystem implementation.
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import os
 import ssl
 import threading
@@ -49,6 +51,7 @@ class RemoteJsonStorage:
         self.token = token
         self.timeout = timeout
         self._versions = {}
+        self._file_versions = {}
         self._lock = threading.RLock()
 
     def _request(self, endpoint, payload):
@@ -65,7 +68,10 @@ class RemoteJsonStorage:
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout, context=ssl.create_default_context()) as response:
-                result = json.loads(response.read())
+                raw_response = response.read(12 * 1024 * 1024 + 1)
+                if len(raw_response) > 12 * 1024 * 1024:
+                    raise RemoteStorageError('storage_response_too_large')
+                result = json.loads(raw_response)
         except urllib.error.HTTPError as error:
             try:
                 body = json.loads(error.read())
@@ -108,6 +114,56 @@ class RemoteJsonStorage:
         with self._lock:
             self._versions[path] = result.get("version")
         return bool(result.get("exists"))
+
+    def read_file(self, path):
+        """Return verified bytes or None. Files are not cached on local disk."""
+        path = _clean_relative_path(path)
+        result = self._request('/v1/files/read', {'path': path})
+        raw = None
+        if result.get('exists'):
+            try:
+                raw = base64.b64decode(result['data'], validate=True)
+            except (KeyError, ValueError, TypeError):
+                raise RemoteStorageError('invalid_file_response') from None
+            if hashlib.sha256(raw).hexdigest() != result.get('version'):
+                raise RemoteStorageError('file_checksum_mismatch')
+        with self._lock:
+            self._file_versions[path] = result.get('version')
+        return raw
+
+    def write_file(self, path, raw):
+        """Conditional replacement; callers must read a file before editing it."""
+        path = _clean_relative_path(path)
+        if not isinstance(raw, bytes) or not raw or len(raw) > 8 * 1024 * 1024:
+            raise RemoteStorageError('invalid_file_size')
+        with self._lock:
+            if path not in self._file_versions:
+                raise RemoteStorageError('read_file_before_write')
+            expected = self._file_versions[path]
+        result = self._request('/v1/files/write', {
+            'path': path,
+            'data': base64.b64encode(raw).decode('ascii'),
+            'expected_version': expected,
+        })
+        if result.get('version') != hashlib.sha256(raw).hexdigest():
+            raise RemoteStorageError('file_checksum_mismatch')
+        with self._lock:
+            self._file_versions[path] = result['version']
+
+    def delete_file(self, path):
+        """Conditionally delete a file after it has been read."""
+        path = _clean_relative_path(path)
+        with self._lock:
+            if path not in self._file_versions:
+                raise RemoteStorageError('read_file_before_delete')
+            expected = self._file_versions[path]
+        result = self._request('/v1/files/delete', {
+            'path': path,
+            'expected_version': expected,
+        })
+        with self._lock:
+            self._file_versions[path] = None
+        return bool(result.get('existed'))
 
 
 def configured_remote_storage(environ=None):
