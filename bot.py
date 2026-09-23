@@ -340,6 +340,26 @@ def _prefetch_remote_json(files):
         cache[relative] = copy.deepcopy(value)
 
 
+def _prefetch_payment_json(*names):
+    """Read a payment screen's JSON state in one cross-region request.
+
+    The production candidate stores data in Russia. A payment action used to
+    serially load schedule, students, settings and history, turning one click
+    into several Netherlands-to-Russia round trips. The per-request cache
+    keeps the usual read/modify/write semantics while the batch API supplies
+    those independent documents together.
+    """
+    if not REMOTE_STORAGE:
+        return
+    defaults = {
+        "schedule": (tenant_file(DATA_FILE), {}),
+        "students": (tenant_file(STUDENTS_FILE), {}),
+        "settings": (tenant_file(SETTINGS_FILE), {}),
+        "payments": (payments_file(), {}),
+    }
+    _prefetch_remote_json({defaults[name][0]: defaults[name][1] for name in names})
+
+
 def _safe_teacher_id(value):
     value = str(value or "").strip()
     return re.sub(r"[^0-9A-Za-z_-]", "_", value) if value else ""
@@ -1004,11 +1024,20 @@ def init_book():
     book_file = current_book_file()
     if REMOTE_STORAGE:
         transaction = PAYMENT_TRANSACTION.get()
+        relative = _remote_relative_path(book_file)
         if (transaction is not None and transaction.get("book_loaded")
                 and os.path.exists(book_file)):
             return
+        # The single production process keeps the verified copy it fetched at
+        # startup or wrote in the preceding payment transaction. Re-downloading
+        # the same XLSX for every payment added a full cross-region round trip.
+        if (os.path.exists(book_file)
+                and REMOTE_STORAGE.has_cached_file_version(relative)):
+            if transaction is not None:
+                transaction["book_loaded"] = True
+            return
         try:
-            raw = REMOTE_STORAGE.read_file(_remote_relative_path(book_file))
+            raw = REMOTE_STORAGE.read_file(relative)
         except RemoteStorageError as exc:
             raise DataCorruptionError(
                 f"Не удалось прочитать книгу из удалённого хранилища ({exc})."
@@ -3091,6 +3120,7 @@ def pay_subscription():
         if requested_lesson_count < 2:
             return jsonify({"status": "error", "message": "Для абонемента укажите минимум 2 занятия."}), 400
 
+    _prefetch_payment_json("schedule", "students", "settings")
     with DATA_LOCK:
         schedule = load_json(DATA_FILE)
         students = load_json(STUDENTS_FILE)
@@ -3231,6 +3261,7 @@ def mark_paid():
     paid = bool(data.get("paid", True))
     send_receipt = bool(data.get("send_receipt", True))
 
+    _prefetch_payment_json("schedule", "students", "settings")
     with DATA_LOCK:
         schedule = load_json(DATA_FILE)
         lesson = None
@@ -3666,6 +3697,7 @@ def get_student_payments():
     student_id = str((request.get_json() or {}).get("student_id", "")).strip()
     if not student_id:
         return jsonify({"status": "error", "message": "Не указан ученик."}), 400
+    _prefetch_payment_json("schedule", "payments")
     with DATA_LOCK:
         recover_payment_transaction()
         schedule = load_json(DATA_FILE)
@@ -3695,6 +3727,7 @@ def reverse_student_payment():
     data = request.get_json() or {}
     student_id = str(data.get("student_id", "")).strip()
     transaction_id = str(data.get("transaction_id", ""))
+    _prefetch_payment_json("schedule", "students", "payments")
     with DATA_LOCK:
         recover_payment_transaction()
         history = load_json(payments_file(), {})
@@ -3778,6 +3811,7 @@ def student_payment_quote(candidates, student_id, count):
 @flask_app.route("/api/get_student_payment_options", methods=["POST"])
 def get_student_payment_options():
     student_id = str((request.get_json() or {}).get("student_id", "")).strip()
+    _prefetch_payment_json("schedule", "students")
     with DATA_LOCK:
         recover_payment_transaction()
         students = load_json(STUDENTS_FILE)
@@ -3823,6 +3857,7 @@ def apply_student_payment():
         "send_receipt": send_receipt,
     }
 
+    _prefetch_payment_json("schedule", "students", "settings", "payments")
     with DATA_LOCK:
         recover_payment_transaction()
         schedule = load_json(DATA_FILE)

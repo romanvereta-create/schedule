@@ -230,6 +230,12 @@ class RemoteJsonStorage:
             self._file_versions[path] = result.get('version')
         return raw
 
+    def has_cached_file_version(self, path):
+        """Whether this process has an exact version for a local file copy."""
+        path = _clean_relative_path(path)
+        with self._lock:
+            return path in self._file_versions and self._file_versions[path] is not None
+
     def write_file(self, path, raw):
         """Conditional replacement; callers must read a file before editing it."""
         path = _clean_relative_path(path)

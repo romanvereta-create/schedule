@@ -80,6 +80,20 @@ class AuditRegressionTests(unittest.TestCase):
             generated = bot.resolve_public_release_id()
         self.assertRegex(generated, r"^bot3-[0-9a-f]{12}$")
 
+    def test_payment_prefetch_groups_independent_json_reads(self):
+        remote = object()
+        with patch.object(bot, "REMOTE_STORAGE", remote), \
+                patch.object(bot, "tenant_file", side_effect=lambda path: "tenant/" + os.path.basename(path)), \
+                patch.object(bot, "payments_file", return_value="tenant/payments.json"), \
+                patch.object(bot, "_prefetch_remote_json") as prefetch:
+            bot._prefetch_payment_json("schedule", "students", "settings", "payments")
+        prefetch.assert_called_once_with({
+            "tenant/schedule.json": {},
+            "tenant/students.json": {},
+            "tenant/settings.json": {},
+            "tenant/payments.json": {},
+        })
+
     def test_readiness_checks_authenticated_remote_storage(self):
         class ReadyStorage:
             def status(self):

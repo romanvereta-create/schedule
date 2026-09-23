@@ -304,12 +304,15 @@ class RemoteStorageServerTests(unittest.TestCase):
                 with self.assertRaises(RemoteStorageError):
                     first.write_file('book.xlsx', b'unsafe-blind-write')
                 self.assertIsNone(first.read_file('book.xlsx'))
+                self.assertFalse(first.has_cached_file_version('book.xlsx'))
                 self.assertIsNone(second.read_file('book.xlsx'))
                 first.write_file('book.xlsx', b'original')
+                self.assertTrue(first.has_cached_file_version('book.xlsx'))
                 with self.assertRaises(RemoteStorageConflict):
                     second.write_file('book.xlsx', b'lost-update')
                 self.assertEqual(second.read_file('book.xlsx'), b'original')
                 self.assertTrue(second.delete_file('book.xlsx'))
+                self.assertFalse(second.has_cached_file_version('book.xlsx'))
                 self.assertIsNone(second.read_file('book.xlsx'))
         finally:
             server.shutdown()
