@@ -44,9 +44,9 @@ def run(host):
         raise RuntimeError("SCHEDULE_BOT_TOKEN is required")
     if host.ALLOW_UNAUTHENTICATED:
         raise RuntimeError("Production requires ALLOW_UNAUTHENTICATED=false")
-    bootstrap_retries = int(os.getenv("TELEGRAM_BOOTSTRAP_RETRIES", "10"))
-    if bootstrap_retries < 0 or bootstrap_retries > 100:
-        raise RuntimeError("TELEGRAM_BOOTSTRAP_RETRIES must be between 0 and 100")
+    bootstrap_retries = int(os.getenv("TELEGRAM_BOOTSTRAP_RETRIES", "-1"))
+    if bootstrap_retries < -1 or bootstrap_retries > 100:
+        raise RuntimeError("TELEGRAM_BOOTSTRAP_RETRIES must be -1 or between 0 and 100")
     remote = getattr(host, "REMOTE_STORAGE", None)
     replica_dir = None
     replica_settings = None
@@ -63,7 +63,21 @@ def run(host):
         os.makedirs(host.RECEIPT_ASSETS_DIR, exist_ok=True)
         os.makedirs(host.RECEIPTS_DIR, exist_ok=True)
         host.init_book()
-        app = host.Application.builder().token(host.TOKEN).post_init(host.post_init).post_stop(host.post_stop).build()
+        app = (
+            host.Application.builder()
+            .token(host.TOKEN)
+            .connect_timeout(30)
+            .read_timeout(30)
+            .write_timeout(30)
+            .pool_timeout(30)
+            .get_updates_connect_timeout(30)
+            .get_updates_read_timeout(45)
+            .get_updates_write_timeout(30)
+            .get_updates_pool_timeout(30)
+            .post_init(host.post_init)
+            .post_stop(host.post_stop)
+            .build()
+        )
         app.add_handler(host.CommandHandler("start", host.start))
         server = make_server(host)  # Bind before starting background tasks.
         stopping = threading.Event()

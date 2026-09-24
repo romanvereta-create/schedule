@@ -16,13 +16,14 @@ const DEFAULT_API_ORIGIN = 'https://bot-1787954043-4984-solo1986.bothost.tech';
 const TEST_API_ORIGIN = 'https://bot-1789984567-3598-solo1986.bothost.tech';
 
 const requestedApiOrigin = new URLSearchParams(window.location.search).get('api_origin');
-const selfHostedBot3 = window.location.origin === TEST_API_ORIGIN
+const selfHostedBot3 = window.location.protocol === 'https:'
     && window.location.pathname.startsWith('/app/');
-const API_ORIGIN = selfHostedBot3 || requestedApiOrigin === TEST_API_ORIGIN
-    ? TEST_API_ORIGIN
-    : DEFAULT_API_ORIGIN;
+const requestedBot3 = requestedApiOrigin === TEST_API_ORIGIN;
+const API_ORIGIN = selfHostedBot3
+    ? window.location.origin
+    : (requestedBot3 ? TEST_API_ORIGIN : DEFAULT_API_ORIGIN);
 const API_URL = `${API_ORIGIN}/api`;
-const SUPPORTS_BOOTSTRAP = API_ORIGIN === TEST_API_ORIGIN;
+const SUPPORTS_BOOTSTRAP = selfHostedBot3 || requestedBot3;
 const START_HOUR = 0;
 const END_HOUR = 23;
 const MIN_HOUR_HEIGHT = 40;
@@ -840,14 +841,7 @@ function finishLessonDrag() {
         state.pendingMove = null;
         return;
     }
-    const commit = () => confirmMoveTarget(target.date, target.time);
-    if (target.dayOff) {
-        document.getElementById('day-off-warning-title').textContent = uiText('Перенос в выходной');
-        document.getElementById('day-off-warning-desc').textContent = uiText('Кажется, календарь рассчитывал отдохнуть 😄 Всё равно перенести занятие на выходной?');
-        document.getElementById('btn-day-off-confirm').textContent = uiText('Всё равно перенести');
-        document.getElementById('btn-day-off-cancel').textContent = uiText('Не сегодня');
-        openDayOffWarning(commit);
-    } else commit();
+    confirmMoveTarget(target.date, target.time);
 }
 
 function resetLessonDragSession(resetMove = true) {
@@ -896,8 +890,7 @@ function attachLessonDrag(card, date, lesson) {
         if (lessonDragSession) resetLessonDragSession(true);
         const invisibleMoveState = state.isMoving
             && document.getElementById('move-hint').classList.contains('hidden')
-            && document.getElementById('move-modal-overlay').classList.contains('hidden')
-            && document.getElementById('day-off-warning-overlay').classList.contains('hidden');
+            && document.getElementById('move-modal-overlay').classList.contains('hidden');
         if (invisibleMoveState) {
             state.isMoving = false;
             state.selectedLesson = null;
@@ -1061,20 +1054,12 @@ function renderCalendar() {
                 slot.setAttribute('aria-disabled', String(!moveTargetAvailable));
                 slot.title = !moveTargetAvailable
                     ? uiText('Время занято или недоступно')
-                    : moveTargetDayOff ? uiText('Выходной: потребуется подтверждение') : uiText('Перенести сюда');
+                    : moveTargetDayOff ? uiText('Перенести на выходной') : uiText('Перенести сюда');
             }
             slot.addEventListener('click', () => {
                 if (state.isMoving) {
                     if (!moveTargetAvailable) return;
-                    if (moveTargetDayOff) {
-                        document.getElementById('day-off-warning-title').textContent = 'Перенос в выходной';
-                        document.getElementById('day-off-warning-desc').textContent = 'Кажется, календарь рассчитывал отдохнуть 😄 Всё равно перенести занятие на выходной?';
-                        document.getElementById('btn-day-off-confirm').textContent = 'Всё равно перенести';
-                        document.getElementById('btn-day-off-cancel').textContent = 'Не сегодня';
-                        openDayOffWarning(() => confirmMoveTarget(key, time));
-                    } else {
-                        confirmMoveTarget(key, time);
-                    }
+                    confirmMoveTarget(key, time);
                     return;
                 }
                 openAddTypeChooser(key, time);
@@ -1818,20 +1803,7 @@ function openEditModal(date, lesson) {
     document.getElementById('modal-overlay').classList.remove('hidden');
 }
 
-let pendingDayOffSave = null;
-
-function openDayOffWarning(action) {
-    pendingDayOffSave = action;
-    document.getElementById('day-off-warning-overlay').classList.remove('hidden');
-}
-
-function closeDayOffWarning() {
-    pendingDayOffSave = null;
-    document.getElementById('day-off-warning-overlay').classList.add('hidden');
-}
-
-async function saveLesson(options = {}) {
-    const skipDayOffWarning = options?.skipDayOffWarning === true;
+async function saveLesson() {
     const date = document.getElementById('lesson-date').value;
     const time = document.getElementById('lesson-time').value;
     const duration = parseInt(document.getElementById('lesson-duration').value || 60, 10);
@@ -1886,17 +1858,6 @@ async function saveLesson(options = {}) {
     if (!isPersonal && (!Number.isInteger(reminderMinutes) || reminderMinutes < 0 || reminderMinutes > 10080)) {
         return alert('Напоминание должно быть в диапазоне от 0 до 10080 минут');
     }
-    if (!state.editingExisting && !skipDayOffWarning && isDayOffDate(date)) {
-        document.getElementById('day-off-warning-title').textContent = isPersonal ? 'Личное дело в выходной' : 'Занятие в выходной';
-        document.getElementById('day-off-warning-desc').textContent = isPersonal
-            ? 'Это ваш выходной день. Всё равно добавить личное дело?'
-            : 'Вообще-то у вас выходной. Не советую 😄 Отдых тоже входит в расписание. Всё равно поставить занятие?';
-        document.getElementById('btn-day-off-confirm').textContent = 'Всё равно поставить';
-        document.getElementById('btn-day-off-cancel').textContent = 'Не сегодня';
-        openDayOffWarning(() => saveLesson({ skipDayOffWarning: true }));
-        return;
-    }
-
     const isNewIndividual = !state.editingExisting && !isPersonal && lessonType === 'student';
     const inviteRoles = isNewIndividual ? selectedLessonInviteRoles() : [];
     const payload = {
@@ -1945,7 +1906,7 @@ async function saveLesson(options = {}) {
 }
 
 function closeAllModals() {
-    ['modal-overlay', 'add-type-overlay', 'move-modal-overlay', 'action-menu-overlay', 'delete-modal-overlay', 'date-picker-overlay', 'app-settings-overlay', 'receipt-settings-overlay', 'help-overlay', 'student-card-overlay', 'work-center-overlay', 'paid-confirm-overlay', 'subscription-pay-overlay', 'lesson-report-overlay', 'students-overlay', 'student-payment-overlay', 'lesson-invite-result-overlay'].forEach(id => document.getElementById(id)?.classList.add('hidden'));
+    ['modal-overlay', 'add-type-overlay', 'move-modal-overlay', 'action-menu-overlay', 'delete-modal-overlay', 'date-picker-overlay', 'app-settings-overlay', 'receipt-settings-overlay', 'help-overlay', 'student-card-overlay', 'work-center-overlay', 'subscription-pay-overlay', 'lesson-report-overlay', 'students-overlay', 'student-payment-overlay', 'lesson-invite-result-overlay'].forEach(id => document.getElementById(id)?.classList.add('hidden'));
 }
 
 // Палитра цветов в меню действий
@@ -2246,32 +2207,6 @@ document.getElementById('btn-subscription-pay-apply').onclick = async () => {
     }
 };
 
-document.getElementById('btn-paid-confirm-cancel').onclick = () => document.getElementById('paid-confirm-overlay').classList.add('hidden');
-document.getElementById('btn-paid-confirm-apply').onclick = async () => {
-    const lesson = state.selectedLesson;
-    if (!lesson) return;
-    const isGroup = lesson.lesson_type === 'group';
-    const sendReceipt = document.getElementById('send-receipt-checkbox').checked;
-    const button = document.getElementById('btn-paid-confirm-apply');
-    const paidStudentIds = isGroup
-        ? Array.from(document.querySelectorAll('#group-paid-members input[type="checkbox"]:checked')).map(input => input.value)
-        : [];
-    button.disabled = true;
-    try {
-        const response = await apiFetch('/mark_paid', {
-            method: 'POST',
-            body: JSON.stringify({ date: lesson.date, id: lesson.id, paid: true, send_receipt: sendReceipt, paid_student_ids: paidStudentIds })
-        });
-        const result = await response.json();
-        if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
-        document.getElementById('paid-confirm-overlay').classList.add('hidden');
-        await refreshScheduleOnly();
-        if (isGroup) alert(uiMessage`Оплаты группы сохранены. ${result.receipt_message || ''}`);
-        else alert(uiMessage`Оплата отмечена. Чек № ${result.receipt_number || '—'}. ${result.receipt_message || ''}`);
-    } finally {
-        button.disabled = false;
-    }
-};
 document.getElementById('btn-action-delete').onclick = () => {
     const personal = state.selectedLesson?.entry_type === 'personal';
     document.getElementById('delete-modal-title').textContent = personal ? 'Удаление личного дела' : 'Удаление занятия';
@@ -2407,16 +2342,7 @@ document.getElementById('btn-close-add-type').onclick = closeAllModals;
 document.getElementById('btn-add-type-student').onclick = () => chooseAddType('student');
 document.getElementById('btn-add-type-group').onclick = () => chooseAddType('group');
 document.getElementById('btn-add-type-personal').onclick = () => chooseAddType('personal');
-document.getElementById('btn-day-off-confirm').onclick = () => {
-    const action = pendingDayOffSave;
-    closeDayOffWarning();
-    if (action) action();
-};
-document.getElementById('btn-day-off-cancel').onclick = closeDayOffWarning;
-document.getElementById('day-off-warning-overlay').addEventListener('click', event => {
-    if (event.target.id === 'day-off-warning-overlay') closeDayOffWarning();
-});
-['modal-overlay', 'add-type-overlay', 'move-modal-overlay', 'action-menu-overlay', 'delete-modal-overlay', 'date-picker-overlay', 'app-settings-overlay', 'receipt-settings-overlay', 'help-overlay', 'student-card-overlay', 'work-center-overlay', 'paid-confirm-overlay', 'subscription-pay-overlay', 'lesson-report-overlay', 'students-overlay', 'student-payment-overlay'].forEach(id => {
+['modal-overlay', 'add-type-overlay', 'move-modal-overlay', 'action-menu-overlay', 'delete-modal-overlay', 'date-picker-overlay', 'app-settings-overlay', 'receipt-settings-overlay', 'help-overlay', 'student-card-overlay', 'work-center-overlay', 'subscription-pay-overlay', 'lesson-report-overlay', 'students-overlay', 'student-payment-overlay'].forEach(id => {
     document.getElementById(id).addEventListener('click', event => { if (event.target.id === id) closeAllModals(); });
 });
 
@@ -2983,11 +2909,10 @@ document.getElementById('personal-bot-check').onclick = () => runPersonalBotActi
     const token = input.value.trim();
     input.value = '';
     const preview = await personalBotAction({action: 'preview', token});
-    if (!confirm(botText('Подключить ', 'Connect ') + preview.bot.name + ' · @' + preview.bot.username + '?')) return;
     renderPersonalBot(await personalBotAction({action: 'connect', ticket: preview.ticket}));
 });
 document.getElementById('personal-bot-disconnect').onclick = () => runPersonalBotAction(async () => {
-    if (!personalBotCurrent || !confirm(botText('Отключить личного бота от TEMLI?', 'Disconnect your personal bot from TEMLI?'))) return;
+    if (!personalBotCurrent) return;
     renderPersonalBot(await personalBotAction({action: 'disconnect', bot_id: personalBotCurrent.bot_id}));
 });
 
@@ -3298,8 +3223,6 @@ async function changeStudentLessonPayment(studentId, item, action, row) {
         openSubscriptionForStudent(lesson, studentId);
         return;
     }
-    const descriptions = { free: 'Сделать занятие бесплатным', unfree: 'Отменить бесплатный статус' };
-    if (descriptions[action] && !confirm(uiMessage`${uiText(descriptions[action])}: ${item.date} ${item.time || ''}?`)) return;
     const status = row.querySelector('.student-finance-status');
     const previousStatusText = status?.textContent || '';
     if (status && (action === 'direct' || action === 'reverse')) {
@@ -3405,9 +3328,6 @@ function renderInviteBindings() {
             button.disabled = inviteBusy;
             button.textContent = action === 'approve' ? botText('Подтвердить', 'Confirm') : botText('Удалить привязку', 'Remove connection');
             button.onclick = () => runInviteAction(async studentId => {
-                if (!confirm(action === 'approve'
-                    ? (binding.role === 'student' ? botText('Подтвердить аккаунт ученика? Предыдущая привязка ученика будет заменена.', 'Confirm this student account? The previous student connection will be replaced.') : botText('Вы проверили, что это нужный человек?', 'Have you verified this is the intended person?'))
-                    : botText('Удалить эту привязку? Карточка ученика сохранится.', 'Remove this connection? The student profile will be kept.'))) return;
                 await inviteApi({action, student_id: studentId, binding_id: binding.id});
                 await loadStudentBotBindings(studentId);
             });
@@ -4005,7 +3925,6 @@ document.getElementById('students-show-archived').onchange = () => renderStudent
 document.getElementById('btn-archive-student').onclick = async () => {
     const studentId = document.getElementById('student-card-overlay').dataset.studentId;
     const archived = !getStudentInfo(studentId).archived;
-    if (!confirm(archived ? 'Убрать ученика из общего списка? История, оплаты и уже созданные занятия сохранятся. Ученика можно вернуть из архива.' : 'Вернуть ученика в общий список?')) return;
     const button = document.getElementById('btn-archive-student');
     button.disabled = true;
     try {
@@ -4023,13 +3942,10 @@ document.getElementById('btn-archive-student').onclick = async () => {
 document.getElementById('btn-delete-student').onclick = async () => {
     const studentId = document.getElementById('student-card-overlay').dataset.studentId;
     const studentName = String(getStudentInfo(studentId).name || '').trim();
-    const typedName = prompt(uiMessage`Удалить ученика «${studentName}»? Профиль и все будущие занятия будут удалены без возможности восстановления. Прошедшие занятия, оплаты, чеки и книга учёта сохранятся.\n\nДля подтверждения введите имя ученика:`);
-    if (typedName === null) return;
-    if (typedName.trim() !== studentName) return alert('Имя не совпало. Удаление отменено.');
     const button = document.getElementById('btn-delete-student');
     button.disabled = true;
     try {
-        const response = await apiFetch('/delete_student', { method: 'POST', body: JSON.stringify({ student_id: studentId, confirm_name: typedName.trim() }) });
+        const response = await apiFetch('/delete_student', { method: 'POST', body: JSON.stringify({ student_id: studentId, confirm_name: studentName }) });
         const result = await response.json();
         if (result.status !== 'ok') throw new Error(result.message || 'Не удалось удалить ученика');
         delete state.students[studentId];

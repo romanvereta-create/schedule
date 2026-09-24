@@ -66,7 +66,6 @@ function openPersonalNotification(lesson, teacherDelay) {
         button.textContent = teacherDelay ? '+' + choice + ' → ' + hhmm : role === 'student' ? botText('Написать ученику', 'Message student') : botText('Написать родителю', 'Message parent');
         button.onclick = async () => {
             if (busy || !select.value) return;
-            if (!confirm(button.textContent + '\n\n' + preview)) return;
             busy = true;
             actions.querySelectorAll('button').forEach(b => b.disabled = true);
             select.disabled = true;
