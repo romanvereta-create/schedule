@@ -133,12 +133,9 @@ RECEIPTS_DIR = project_path("receipts")
 def versioned_webapp_url():
     """Give Telegram a new document URL for every deployed frontend release."""
     parts = urlsplit(WEBAPP_URL)
-    path = parts.path
-    if (parts.hostname or "").lower().endswith(".bothost.tech") and path in {"", "/"}:
-        path = "/app/"
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["v"] = BOT3_RELEASE_ID
-    return urlunsplit((parts.scheme, parts.netloc, path, urlencode(query), parts.fragment))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _bounded_env_int(name, default, minimum, maximum):
