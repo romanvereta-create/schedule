@@ -49,20 +49,6 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(settings["company_name"], "saved company")
         self.assertEqual(settings["phone"], "saved phone")
 
-    def test_receipt_copies_are_sent_in_parallel_and_keep_order(self):
-        rendezvous = threading.Barrier(2)
-
-        def fake_send(chat_id, _path, _caption, _filename=None):
-            rendezvous.wait(timeout=1)
-            return True, str(chat_id)
-
-        jobs = [
-            {"chat_id": 101, "path": "one.pdf", "caption": "one"},
-            {"chat_id": 202, "path": "two.pdf", "caption": "two"},
-        ]
-        with patch.object(bot, "send_receipt_from_flask", side_effect=fake_send):
-            self.assertEqual(bot.send_receipt_jobs(jobs), [(True, "101"), (True, "202")])
-
     def test_bot3_frontend_is_public_but_server_source_is_not(self):
         client = bot.flask_app.test_client()
         index = client.get("/app/")
@@ -86,8 +72,6 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("release-id-v1", payload["capabilities"])
         startup = bot.flask_app.test_client().get("/app/startup.js")
         self.assertIn(b"health.release", startup.data)
-        self.assertEqual(startup.headers.get("Cache-Control"), "no-store")
-        self.assertIn(b"app.js?v=${assetVersion}", startup.data)
 
     def test_release_env_override_is_validated(self):
         with patch.dict(os.environ, {"TEMLI_RELEASE_ID": "bot3-2026.09.22"}):
@@ -95,14 +79,6 @@ class AuditRegressionTests(unittest.TestCase):
         with patch.dict(os.environ, {"TEMLI_RELEASE_ID": "secret value with spaces"}):
             generated = bot.resolve_public_release_id()
         self.assertRegex(generated, r"^bot3-[0-9a-f]{12}$")
-
-    def test_telegram_button_url_is_versioned_without_losing_query(self):
-        with patch.object(bot, "WEBAPP_URL", "https://candidate.example/app/?source=telegram"):
-            url = bot.versioned_webapp_url()
-        self.assertEqual(
-            url,
-            f"https://candidate.example/app/?source=telegram&v={bot.BOT3_RELEASE_ID}",
-        )
 
     def test_payment_prefetch_groups_independent_json_reads(self):
         remote = object()

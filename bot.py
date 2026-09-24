@@ -41,10 +41,9 @@ import threading
 import time
 import shutil
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from functools import wraps
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl
 
 if os.name == "nt":
     import msvcrt
@@ -72,7 +71,6 @@ from consent_ledger import (
 )
 
 CALENDAR_UNDO = CalendarUndo()
-RECEIPT_SEND_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="receipt-send")
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -128,14 +126,6 @@ OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
 ALLOW_UNAUTHENTICATED = os.getenv("ALLOW_UNAUTHENTICATED", "false").lower() == "true"
 RECEIPTS_DIR = project_path("receipts")
-
-
-def versioned_webapp_url():
-    """Give Telegram a new document URL for every deployed frontend release."""
-    parts = urlsplit(WEBAPP_URL)
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query["v"] = BOT3_RELEASE_ID
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _bounded_env_int(name, default, minimum, maximum):
@@ -1284,27 +1274,6 @@ def send_receipt_from_flask(chat_id, pdf_path, caption, filename=None):
         return False, str(exc)
 
 
-def send_receipt_jobs(jobs):
-    """Send independent Telegram copies in parallel and preserve job order."""
-    if not jobs:
-        return []
-    results = [None] * len(jobs)
-    futures = {
-        RECEIPT_SEND_POOL.submit(
-            send_receipt_from_flask,
-            job["chat_id"], job["path"], job["caption"], job.get("filename"),
-        ): index
-        for index, job in enumerate(jobs)
-    }
-    for future in as_completed(futures):
-        index = futures[future]
-        try:
-            results[index] = future.result()
-        except Exception as exc:
-            results[index] = (False, str(exc))
-    return results
-
-
 def delete_receipt_file(pdf_path):
     """Удаляет временный PDF чека после отправки/обработки."""
     if not pdf_path:
@@ -1463,7 +1432,7 @@ def send_bot3_frontend_file(filename):
     if filename not in BOT3_FRONTEND_FILES:
         return jsonify({"status": "error", "message": "Файл не найден."}), 404
     response = send_from_directory(CODE_DIR, filename, conditional=True)
-    if filename in {"index.html", "startup.js"}:
+    if filename == "index.html":
         response.headers["Cache-Control"] = "no-store"
     else:
         response.headers["Cache-Control"] = "public, max-age=300"
@@ -3498,10 +3467,7 @@ def mark_paid():
                         save_json(DATA_FILE, schedule)
                 except Exception as exc:
                     return jsonify({"status": "error", "message": f"Отмена оплаты не сохранена, изменения отменены: {exc}"}), 500
-                return jsonify({
-                    "status": "ok", "paid": False, "receipt_sent": False,
-                    "lesson": lesson,
-                })
+                return jsonify({"status": "ok", "paid": False, "receipt_sent": False})
 
             students = load_json(STUDENTS_FILE)
             amount = get_student_price(students, lesson.get("student_id"), lesson.get("price"))
@@ -3551,35 +3517,22 @@ def mark_paid():
         failed_names = []
         teacher_sent_names = []
         teacher_failed_names = []
-        delivery_jobs = []
         for job in receipt_jobs:
-            if send_receipt:
-                if job["parent_chat_id"] is None:
-                    failed_names.append(job["name"])
-                else:
-                    delivery_jobs.append({
-                        "kind": "parent", "name": job["name"],
-                        "chat_id": job["parent_chat_id"], "path": job["path"],
-                        "caption": job["parent_caption"],
-                    })
-            if send_teacher_copy:
-                if teacher_chat_id is None:
-                    teacher_failed_names.append(job["name"])
-                else:
-                    delivery_jobs.append({
-                        "kind": "teacher", "name": job["name"],
-                        "chat_id": teacher_chat_id, "path": job["path"],
-                        "caption": job["teacher_caption"],
-                    })
+            try:
+                if send_receipt:
+                    if job["parent_chat_id"] is None:
+                        failed_names.append(job["name"])
+                    else:
+                        ok, _error = send_receipt_from_flask(job["parent_chat_id"], job["path"], job["parent_caption"])
+                        (sent_names if ok else failed_names).append(job["name"])
 
-        try:
-            for delivery, (ok, _error) in zip(delivery_jobs, send_receipt_jobs(delivery_jobs)):
-                if delivery["kind"] == "parent":
-                    (sent_names if ok else failed_names).append(delivery["name"])
-                else:
-                    (teacher_sent_names if ok else teacher_failed_names).append(delivery["name"])
-        finally:
-            for job in receipt_jobs:
+                if send_teacher_copy:
+                    if teacher_chat_id is None:
+                        teacher_failed_names.append(job["name"])
+                    else:
+                        ok, _error = send_receipt_from_flask(teacher_chat_id, job["path"], job["teacher_caption"])
+                        (teacher_sent_names if ok else teacher_failed_names).append(job["name"])
+            finally:
                 delete_receipt_file(job["path"])
 
         parts = []
@@ -3600,7 +3553,6 @@ def mark_paid():
             "status": "ok",
             "paid": lesson.get("paid", False),
             "group": True,
-            "lesson": lesson,
             "members": lesson.get("group_members", []),
             "receipts_created": created_receipts,
             "receipt_sent_names": sent_names,
@@ -3614,7 +3566,6 @@ def mark_paid():
     teacher_receipt_sent = False
     messages = []
     try:
-        delivery_jobs = []
         if send_receipt:
             student_info = get_student_record(load_json(STUDENTS_FILE), lesson.get("student_id"))
             contacts = student_info.get("contacts") or lesson.get("contacts") or {}
@@ -3623,7 +3574,8 @@ def mark_paid():
                 messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
             else:
                 caption = f"Чек об оплате занятия с {lesson.get('student', 'учеником')} на {amount:.2f} руб. № {receipt_number}"
-                delivery_jobs.append({"kind": "parent", "chat_id": chat_id, "path": receipt_path, "caption": caption})
+                receipt_sent, error = send_receipt_from_flask(chat_id, receipt_path, caption)
+                messages.append("Чек отправлен родителю." if receipt_sent else f"Родителю чек отправить не удалось: {error}")
         else:
             messages.append("Родителю чек не отправлялся.")
 
@@ -3632,22 +3584,14 @@ def mark_paid():
                 messages.append("Копия вам не отправлена: откройте этого бота и нажмите /start.")
             else:
                 teacher_caption = f"Копия чека: {lesson.get('student', 'ученик')} · {amount:.2f} руб. · № {receipt_number}"
-                delivery_jobs.append({"kind": "teacher", "chat_id": teacher_chat_id, "path": receipt_path, "caption": teacher_caption})
-
-        for delivery, (ok, error) in zip(delivery_jobs, send_receipt_jobs(delivery_jobs)):
-            if delivery["kind"] == "parent":
-                receipt_sent = ok
-                messages.append("Чек отправлен родителю." if ok else f"Родителю чек отправить не удалось: {error}")
-            else:
-                teacher_receipt_sent = ok
-                messages.append("Копия чека отправлена вам." if ok else f"Копию вам отправить не удалось: {error}")
+                teacher_receipt_sent, error = send_receipt_from_flask(teacher_chat_id, receipt_path, teacher_caption)
+                messages.append("Копия чека отправлена вам." if teacher_receipt_sent else f"Копию вам отправить не удалось: {error}")
     finally:
         delete_receipt_file(receipt_path)
 
     return jsonify({
         "status": "ok",
         "paid": True,
-        "lesson": lesson,
         "receipt_created": True,
         "receipt_number": receipt_number,
         "receipt_sent": receipt_sent,
@@ -4255,7 +4199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         ready_text,
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(open_text, web_app=WebAppInfo(url=versioned_webapp_url()))
+            InlineKeyboardButton(open_text, web_app=WebAppInfo(url=WEBAPP_URL))
         ]]),
     )
 
