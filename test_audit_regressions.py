@@ -104,6 +104,14 @@ class AuditRegressionTests(unittest.TestCase):
             f"https://candidate.example/app/?source=telegram&v={bot.BOT3_RELEASE_ID}",
         )
 
+    def test_telegram_button_normalizes_bothost_root_to_frontend_route(self):
+        with patch.object(bot, "WEBAPP_URL", "https://bot-candidate.bothost.tech"):
+            url = bot.versioned_webapp_url()
+        self.assertEqual(
+            url,
+            f"https://bot-candidate.bothost.tech/app/?v={bot.BOT3_RELEASE_ID}",
+        )
+
     def test_payment_prefetch_groups_independent_json_reads(self):
         remote = object()
         with patch.object(bot, "REMOTE_STORAGE", remote), \
