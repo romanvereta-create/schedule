@@ -16,13 +16,14 @@ const DEFAULT_API_ORIGIN = 'https://bot-1787954043-4984-solo1986.bothost.tech';
 const TEST_API_ORIGIN = 'https://bot-1789984567-3598-solo1986.bothost.tech';
 
 const requestedApiOrigin = new URLSearchParams(window.location.search).get('api_origin');
-const selfHostedBot3 = window.location.origin === TEST_API_ORIGIN
+const selfHostedBot3 = window.location.protocol === 'https:'
     && window.location.pathname.startsWith('/app/');
-const API_ORIGIN = selfHostedBot3 || requestedApiOrigin === TEST_API_ORIGIN
-    ? TEST_API_ORIGIN
-    : DEFAULT_API_ORIGIN;
+const requestedBot3 = requestedApiOrigin === TEST_API_ORIGIN;
+const API_ORIGIN = selfHostedBot3
+    ? window.location.origin
+    : (requestedBot3 ? TEST_API_ORIGIN : DEFAULT_API_ORIGIN);
 const API_URL = `${API_ORIGIN}/api`;
-const SUPPORTS_BOOTSTRAP = API_ORIGIN === TEST_API_ORIGIN;
+const SUPPORTS_BOOTSTRAP = selfHostedBot3 || requestedBot3;
 const START_HOUR = 0;
 const END_HOUR = 23;
 const MIN_HOUR_HEIGHT = 40;

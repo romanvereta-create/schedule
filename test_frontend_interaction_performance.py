@@ -40,6 +40,12 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
         self.assertNotIn("direct: 'Отметить занятие оплаченным'", finance)
         self.assertNotIn("reverse: 'Снять оплату'", finance)
 
+    def test_self_hosted_frontend_uses_its_own_api_origin(self):
+        prelude = self.app[:self.app.index("const START_HOUR")]
+        self.assertIn("? window.location.origin", prelude)
+        self.assertIn("const SUPPORTS_BOOTSTRAP = selfHostedBot3 || requestedBot3", prelude)
+        self.assertNotIn("window.location.origin === TEST_API_ORIGIN", prelude)
+
 
 if __name__ == "__main__":
     unittest.main()

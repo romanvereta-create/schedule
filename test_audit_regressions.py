@@ -96,6 +96,14 @@ class AuditRegressionTests(unittest.TestCase):
             generated = bot.resolve_public_release_id()
         self.assertRegex(generated, r"^bot3-[0-9a-f]{12}$")
 
+    def test_telegram_button_url_is_versioned_without_losing_query(self):
+        with patch.object(bot, "WEBAPP_URL", "https://candidate.example/app/?source=telegram"):
+            url = bot.versioned_webapp_url()
+        self.assertEqual(
+            url,
+            f"https://candidate.example/app/?source=telegram&v={bot.BOT3_RELEASE_ID}",
+        )
+
     def test_payment_prefetch_groups_independent_json_reads(self):
         remote = object()
         with patch.object(bot, "REMOTE_STORAGE", remote), \

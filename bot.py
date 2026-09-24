@@ -44,7 +44,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from functools import wraps
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 if os.name == "nt":
     import msvcrt
@@ -128,6 +128,14 @@ OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
 ALLOW_UNAUTHENTICATED = os.getenv("ALLOW_UNAUTHENTICATED", "false").lower() == "true"
 RECEIPTS_DIR = project_path("receipts")
+
+
+def versioned_webapp_url():
+    """Give Telegram a new document URL for every deployed frontend release."""
+    parts = urlsplit(WEBAPP_URL)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["v"] = BOT3_RELEASE_ID
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _bounded_env_int(name, default, minimum, maximum):
@@ -4247,7 +4255,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         ready_text,
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(open_text, web_app=WebAppInfo(url=WEBAPP_URL))
+            InlineKeyboardButton(open_text, web_app=WebAppInfo(url=versioned_webapp_url()))
         ]]),
     )
 
