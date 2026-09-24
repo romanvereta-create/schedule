@@ -85,7 +85,7 @@ def resolve_public_release_id():
         return configured
 
     digest = hashlib.sha256()
-    for filename in ("bot.py", "index.html", "startup.js", "app.js", "ux.js"):
+    for filename in ("bot.py", "production_server.py", "index.html", "startup.js", "app.js", "ux.js"):
         path = os.path.join(CODE_DIR, filename)
         try:
             with open(path, "rb") as source:
