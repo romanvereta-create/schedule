@@ -203,6 +203,23 @@
         </div>
     </div>
 
+    <!-- ПОДТВЕРЖДЕНИЕ ОПЛАТЫ -->
+    <div id="paid-confirm-overlay" class="hidden">
+        <div class="modal-content text-center">
+            <h2 id="paid-confirm-title">Оплата</h2>
+            <p id="paid-confirm-desc" class="modal-desc">Подтвердить оплату?</p>
+            <div id="group-paid-members" class="group-paid-members hidden"></div>
+            <label class="checkbox-label receipt-send-checkbox">
+                <input type="checkbox" id="send-receipt-checkbox" checked>
+                <span>Отправить чек родителю</span>
+            </label>
+            <div class="modal-actions-column">
+                <button id="btn-paid-confirm-apply" class="primary-btn"><svg class="thread-icon" aria-hidden="true"><use href="#ti-check"></use></svg>Подтвердить оплату</button>
+                <button id="btn-paid-confirm-cancel" class="secondary-btn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ОПЛАТА АБОНЕМЕНТА -->
     <div id="subscription-pay-overlay" class="hidden">
         <div class="modal-content text-center">

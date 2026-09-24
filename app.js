@@ -1,8 +1,5 @@
 const tg = window.Telegram.WebApp;
 tg.expand();
-// Legacy pages used a confirmation overlay for direct payments. Remove it
-// defensively when Telegram restores an older HTML snapshot with this script.
-document.getElementById('paid-confirm-overlay')?.remove();
 
 // Keep dialogs inside the visible WebView, including when the keyboard reduces it.
 function updateModalViewport() {
@@ -2250,6 +2247,30 @@ document.getElementById('btn-subscription-pay-apply').onclick = async () => {
     }
 };
 
+document.getElementById('btn-paid-confirm-cancel').onclick = () => document.getElementById('paid-confirm-overlay').classList.add('hidden');
+document.getElementById('btn-paid-confirm-apply').onclick = async () => {
+    const lesson = state.selectedLesson;
+    if (!lesson) return;
+    const isGroup = lesson.lesson_type === 'group';
+    const sendReceipt = document.getElementById('send-receipt-checkbox').checked;
+    const button = document.getElementById('btn-paid-confirm-apply');
+    const paidStudentIds = isGroup
+        ? Array.from(document.querySelectorAll('#group-paid-members input[type="checkbox"]:checked')).map(input => input.value)
+        : [];
+    button.disabled = true;
+    try {
+        const response = await apiFetch('/mark_paid', {
+            method: 'POST',
+            body: JSON.stringify({ date: lesson.date, id: lesson.id, paid: true, send_receipt: sendReceipt, paid_student_ids: paidStudentIds })
+        });
+        const result = await response.json();
+        if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
+        document.getElementById('paid-confirm-overlay').classList.add('hidden');
+        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
+    } finally {
+        button.disabled = false;
+    }
+};
 document.getElementById('btn-action-delete').onclick = () => {
     const personal = state.selectedLesson?.entry_type === 'personal';
     document.getElementById('delete-modal-title').textContent = personal ? 'Удаление личного дела' : 'Удаление занятия';

@@ -10,7 +10,6 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.ux = (ROOT / "ux.js").read_text(encoding="utf-8")
         cls.app = (ROOT / "app.js").read_text(encoding="utf-8")
-        cls.index = (ROOT / "index.html").read_text(encoding="utf-8")
 
     def test_draft_capture_is_deferred_out_of_input_handler(self):
         self.assertIn("overlay.addEventListener('input',scheduleCapture)", self.ux)
@@ -46,12 +45,6 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
         self.assertIn("? window.location.origin", prelude)
         self.assertIn("const SUPPORTS_BOOTSTRAP = selfHostedBot3 || requestedBot3", prelude)
         self.assertNotIn("window.location.origin === TEST_API_ORIGIN", prelude)
-
-    def test_legacy_payment_confirmation_is_physically_absent(self):
-        self.assertNotIn('id="paid-confirm-overlay"', self.index)
-        self.assertNotIn('Подтвердить оплату', self.index)
-        self.assertNotIn("btn-paid-confirm-apply", self.app)
-        self.assertIn("document.getElementById('paid-confirm-overlay')?.remove()", self.app)
 
 
 if __name__ == "__main__":
