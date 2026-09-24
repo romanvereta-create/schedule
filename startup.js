@@ -135,7 +135,7 @@
         try {
             appScriptsStarted = true;
             await loadScript('i18n.js?v=1.0.0');
-            await loadScript('app.js?v=20260922-selfhost1');
+            await loadScript('app.js?v=20260924-payment-fast1');
             await loadScript('ux.js?v=1.0.0');
             await loadScript('personal_notifications.js?v=1.0.0');
             await loadScript('help.js?v=1.0.0');

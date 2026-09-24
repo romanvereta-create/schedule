@@ -482,6 +482,22 @@ async function refreshScheduleOnly({ refreshHelper = true } = {}) {
     }
 }
 
+function applyReturnedLesson(date, lessonId, updatedLesson) {
+    if (!updatedLesson || !date || !lessonId) return false;
+    const day = state.schedule?.[date];
+    if (!Array.isArray(day)) return false;
+    const index = day.findIndex(item => String(item?.id || '') === String(lessonId));
+    if (index < 0) return false;
+    day[index] = updatedLesson;
+    storeWeekSchedule(dateKey(state.currentMonday), state.schedule);
+    if (state.selectedLesson && String(state.selectedLesson.id || '') === String(lessonId)
+        && state.selectedLesson.date === date) {
+        state.selectedLesson = { date, ...updatedLesson };
+    }
+    renderCalendar();
+    return true;
+}
+
 async function refreshScheduleAndStudents() {
     try {
         clearWeekScheduleCache();
@@ -1296,22 +1312,33 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
     if (!lesson || !member || member.free) return;
     if (hasAllocatedPayment(member)) return explainAllocatedPayment(member.student_id);
     if (member.paid_via_subscription) return alert('Занятие оплачено абонементом. Снятие оплаты одного занятия заблокировано.');
-    const verb = uiText(makePaid ? 'Отметить оплату' : 'Снять оплату');
-    if (!confirm(uiMessage`${verb}: ${member.name || uiText('ученик')}?`)) return;
-    const response = await apiFetch('/mark_paid', {
-        method: 'POST',
-        body: JSON.stringify({
-            date: lesson.date,
-            id: lesson.id,
-            paid: makePaid,
-            send_receipt: makePaid && state.settings.default_send_receipts !== false,
-            student_id: member.student_id
-        })
-    });
-    const result = await response.json();
-    if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
+    const previousLesson = JSON.parse(JSON.stringify(lesson));
+    const optimisticLesson = JSON.parse(JSON.stringify(lesson));
+    const optimisticMember = (optimisticLesson.group_members || [])
+        .find(item => String(item.student_id || '') === String(member.student_id || ''));
+    if (optimisticMember) optimisticMember.paid = makePaid;
+    optimisticLesson.paid = (optimisticLesson.group_members || []).length > 0
+        && optimisticLesson.group_members.every(item => item.paid || item.free);
     closeActionMenu();
-    await refreshScheduleOnly();
+    applyReturnedLesson(lesson.date, lesson.id, optimisticLesson);
+    try {
+        const response = await apiFetch('/mark_paid', {
+            method: 'POST',
+            body: JSON.stringify({
+                date: lesson.date,
+                id: lesson.id,
+                paid: makePaid,
+                send_receipt: makePaid && state.settings.default_send_receipts !== false,
+                student_id: member.student_id
+            })
+        });
+        const result = await response.json();
+        if (result.status !== 'ok') throw new Error(result.message || 'Ошибка изменения оплаты');
+        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
+    } catch (error) {
+        applyReturnedLesson(lesson.date, lesson.id, previousLesson);
+        alert(error.message || 'Ошибка изменения оплаты');
+    }
 }
 
 function closeActionMenu() {
@@ -2106,42 +2133,37 @@ document.getElementById('btn-action-paid').onclick = async () => {
     const lesson = state.selectedLesson;
     if (!lesson) return;
     const isGroup = lesson.lesson_type === 'group';
+    if (isGroup) return;
     if (!isGroup && hasAllocatedPayment(lesson)) return explainAllocatedPayment(lesson.student_id);
     if (!isGroup && lesson.paid_via_subscription) return alert('Занятие оплачено абонементом. Снятие оплаты одного занятия заблокировано.');
     if (!isGroup && lesson.free) return alert('Сначала отмените бесплатный статус.');
 
-    if (!isGroup && lesson.paid) {
-        if (!confirm(uiMessage`Снять отметку об оплате у занятия ${lesson.student || ''} ${lesson.time || ''}?`)) return;
+    const button = document.getElementById('btn-action-paid');
+    const makePaid = !lesson.paid;
+    const previousLesson = JSON.parse(JSON.stringify(lesson));
+    const optimisticLesson = { ...lesson, paid: makePaid };
+    button.disabled = true;
+    closeActionMenu();
+    applyReturnedLesson(lesson.date, lesson.id, optimisticLesson);
+    try {
         const response = await apiFetch('/mark_paid', {
             method: 'POST',
-            body: JSON.stringify({ date: lesson.date, id: lesson.id, paid: false, send_receipt: false })
+            body: JSON.stringify({
+                date: lesson.date,
+                id: lesson.id,
+                paid: makePaid,
+                send_receipt: makePaid && state.settings.default_send_receipts !== false
+            })
         });
         const result = await response.json();
-        if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
-        closeActionMenu();
-        refreshScheduleOnly();
-        return;
+        if (result.status !== 'ok') throw new Error(result.message || 'Ошибка изменения оплаты');
+        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
+    } catch (error) {
+        applyReturnedLesson(lesson.date, lesson.id, previousLesson);
+        alert(error.message || 'Ошибка изменения оплаты');
+    } finally {
+        button.disabled = false;
     }
-
-    document.getElementById('paid-confirm-title').innerHTML = `${userContentOr(isGroup ? lesson.group_name : lesson.student, isGroup ? 'Группа' : 'Ученик')} · ${userContent(lesson.time || '--:--')}`;
-    document.getElementById('paid-confirm-desc').textContent = isGroup
-        ? 'Отметьте учеников, которые оплатили. Сумма берётся из стоимости каждого участника в этом занятии.'
-        : (() => { const price = Number(lessonPriceValue(lesson)); return `Подтвердить оплату${price > 0 ? ` на ${money(price)}` : ''}?`; })();
-    const membersBox = document.getElementById('group-paid-members');
-    membersBox.innerHTML = '';
-    membersBox.classList.toggle('hidden', !isGroup);
-    if (isGroup) {
-        (lesson.group_members || []).forEach(member => {
-            const label = document.createElement('label');
-            label.className = 'group-paid-member-row';
-            const memberPrice = lessonPriceValue(lesson, member);
-            label.innerHTML = `<input type="checkbox" value="${escapeHtml(member.student_id || '')}" ${member.paid ? 'checked' : ''}><span>${userContentOr(member.name, 'Ученик')}${memberPrice > 0 ? ` · ${money(memberPrice)}` : ` · ${uiText('Цена не указана')}`}</span>`;
-            membersBox.appendChild(label);
-        });
-    }
-    document.getElementById('send-receipt-checkbox').checked = state.settings.default_send_receipts !== false;
-    closeActionMenu();
-    document.getElementById('paid-confirm-overlay').classList.remove('hidden');
 };
 
 document.getElementById('btn-action-subscription').onclick = () => {
@@ -3249,7 +3271,6 @@ async function loadStudentPayments(studentId) {
                 ${tx.reversed_at ? `<small>${uiText('Отменена')} ${escapeHtml(new Date(tx.reversed_at).toLocaleString(uiLocale()))}</small>` : `<button type="button" class="secondary-btn">${threadIcon('restore')}Отменить весь платёж</button>`}`;
             const button = row.querySelector('button');
             if (button) button.onclick = async () => {
-                if (!confirm(uiMessage`Отменить всю общую оплату ${money(tx.amount)}? Будут восстановлены ${tx.allocations.length} занятий и добавлена отрицательная запись в книгу.`)) return;
                 button.disabled = true;
                 try {
                     const response = await apiFetch('/reverse_student_payment', { method: 'POST', body: JSON.stringify({ student_id: studentId, transaction_id: tx.id }) });
@@ -3277,8 +3298,13 @@ async function changeStudentLessonPayment(studentId, item, action, row) {
         openSubscriptionForStudent(lesson, studentId);
         return;
     }
-    const descriptions = { direct: 'Отметить занятие оплаченным', reverse: 'Снять оплату', free: 'Сделать занятие бесплатным', unfree: 'Отменить бесплатный статус' };
-    if (!confirm(uiMessage`${uiText(descriptions[action])}: ${item.date} ${item.time || ''}?`)) return;
+    const descriptions = { free: 'Сделать занятие бесплатным', unfree: 'Отменить бесплатный статус' };
+    if (descriptions[action] && !confirm(uiMessage`${uiText(descriptions[action])}: ${item.date} ${item.time || ''}?`)) return;
+    const status = row.querySelector('.student-finance-status');
+    const previousStatusText = status?.textContent || '';
+    if (status && (action === 'direct' || action === 'reverse')) {
+        status.textContent = uiText(action === 'direct' ? 'Оплачено · сохраняется…' : 'Не оплачено · сохраняется…');
+    }
     row.querySelectorAll('button').forEach(button => { button.disabled = true; });
     try {
         const isState = action === 'free' || action === 'unfree';
@@ -3289,8 +3315,10 @@ async function changeStudentLessonPayment(studentId, item, action, row) {
         });
         const result = await response.json();
         if (result.status !== 'ok') throw new Error(result.message || 'Не удалось изменить оплату');
-        await Promise.all([refreshScheduleOnly(), refreshOpenPaymentCard()]);
+        const lessonApplied = !isState && applyReturnedLesson(item.date, item.id, result.lesson);
+        await Promise.all([lessonApplied ? Promise.resolve() : refreshScheduleOnly(), refreshOpenPaymentCard()]);
     } catch (error) {
+        if (status) status.textContent = previousStatusText;
         alert(error.message || 'Ошибка изменения оплаты');
     } finally {
         row.querySelectorAll('button').forEach(button => { button.disabled = false; });
