@@ -2,10 +2,8 @@
 import os
 import signal
 import threading
-import httpx
 from contextlib import contextmanager
 from pathlib import Path
-from telegram.request import HTTPXRequest
 
 
 @contextmanager
@@ -41,23 +39,6 @@ def make_server(host):
                          channel_timeout=120, expose_tracebacks=False)
 
 
-def telegram_request(*, read_timeout):
-    """Use IPv4 on hosts whose advertised IPv6 route cannot reach Telegram."""
-    transport = httpx.AsyncHTTPTransport(
-        retries=2,
-        local_address="0.0.0.0",
-    )
-    return HTTPXRequest(
-        connection_pool_size=32,
-        connect_timeout=30,
-        read_timeout=read_timeout,
-        write_timeout=30,
-        pool_timeout=30,
-        media_write_timeout=30,
-        httpx_kwargs={"transport": transport},
-    )
-
-
 def run(host):
     if not host.TOKEN:
         raise RuntimeError("SCHEDULE_BOT_TOKEN is required")
@@ -82,15 +63,7 @@ def run(host):
         os.makedirs(host.RECEIPT_ASSETS_DIR, exist_ok=True)
         os.makedirs(host.RECEIPTS_DIR, exist_ok=True)
         host.init_book()
-        app = (
-            host.Application.builder()
-            .token(host.TOKEN)
-            .request(telegram_request(read_timeout=30))
-            .get_updates_request(telegram_request(read_timeout=45))
-            .post_init(host.post_init)
-            .post_stop(host.post_stop)
-            .build()
-        )
+        app = host.Application.builder().token(host.TOKEN).post_init(host.post_init).post_stop(host.post_stop).build()
         app.add_handler(host.CommandHandler("start", host.start))
         server = make_server(host)  # Bind before starting background tasks.
         stopping = threading.Event()
