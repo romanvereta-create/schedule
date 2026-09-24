@@ -3467,7 +3467,10 @@ def mark_paid():
                         save_json(DATA_FILE, schedule)
                 except Exception as exc:
                     return jsonify({"status": "error", "message": f"Отмена оплаты не сохранена, изменения отменены: {exc}"}), 500
-                return jsonify({"status": "ok", "paid": False, "receipt_sent": False})
+                return jsonify({
+                    "status": "ok", "paid": False, "receipt_sent": False,
+                    "lesson": lesson,
+                })
 
             students = load_json(STUDENTS_FILE)
             amount = get_student_price(students, lesson.get("student_id"), lesson.get("price"))
@@ -3553,6 +3556,7 @@ def mark_paid():
             "status": "ok",
             "paid": lesson.get("paid", False),
             "group": True,
+            "lesson": lesson,
             "members": lesson.get("group_members", []),
             "receipts_created": created_receipts,
             "receipt_sent_names": sent_names,
@@ -3592,6 +3596,7 @@ def mark_paid():
     return jsonify({
         "status": "ok",
         "paid": True,
+        "lesson": lesson,
         "receipt_created": True,
         "receipt_number": receipt_number,
         "receipt_sent": receipt_sent,

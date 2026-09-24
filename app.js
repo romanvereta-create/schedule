@@ -482,6 +482,22 @@ async function refreshScheduleOnly({ refreshHelper = true } = {}) {
     }
 }
 
+function applyReturnedLesson(date, lessonId, updatedLesson) {
+    if (!updatedLesson || !date || !lessonId) return false;
+    const day = state.schedule?.[date];
+    if (!Array.isArray(day)) return false;
+    const index = day.findIndex(item => String(item?.id || '') === String(lessonId));
+    if (index < 0) return false;
+    day[index] = updatedLesson;
+    storeWeekSchedule(dateKey(state.currentMonday), state.schedule);
+    if (state.selectedLesson && String(state.selectedLesson.id || '') === String(lessonId)
+        && state.selectedLesson.date === date) {
+        state.selectedLesson = { date, ...updatedLesson };
+    }
+    renderCalendar();
+    return true;
+}
+
 async function refreshScheduleAndStudents() {
     try {
         clearWeekScheduleCache();
@@ -1311,7 +1327,7 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
     const result = await response.json();
     if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
     closeActionMenu();
-    await refreshScheduleOnly();
+    if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
 }
 
 function closeActionMenu() {
@@ -2119,7 +2135,7 @@ document.getElementById('btn-action-paid').onclick = async () => {
         const result = await response.json();
         if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
         closeActionMenu();
-        refreshScheduleOnly();
+        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) refreshScheduleOnly();
         return;
     }
 
@@ -2243,7 +2259,7 @@ document.getElementById('btn-paid-confirm-apply').onclick = async () => {
         const result = await response.json();
         if (result.status !== 'ok') return alert(result.message || 'Ошибка изменения оплаты');
         document.getElementById('paid-confirm-overlay').classList.add('hidden');
-        await refreshScheduleOnly();
+        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
         if (isGroup) alert(uiMessage`Оплаты группы сохранены. ${result.receipt_message || ''}`);
         else alert(uiMessage`Оплата отмечена. Чек № ${result.receipt_number || '—'}. ${result.receipt_message || ''}`);
     } finally {
