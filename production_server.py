@@ -2,8 +2,62 @@
 import os
 import signal
 import threading
+import time
+from telegram.request import HTTPXRequest
 from contextlib import contextmanager
 from pathlib import Path
+
+
+class TelegramDiagnostics:
+    """Only operation names, timings and error classes; never tokens or payloads."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.operations = {}
+        self.start_stage = "not_received"
+
+    def record(self, operation, state):
+        if operation not in {"getMe", "getUpdates", "sendMessage", "deleteWebhook"}:
+            return
+        with self.lock:
+            item = self.operations.setdefault(operation, {"attempts": 0})
+            if state == "pending":
+                item["attempts"] += 1
+            item.update(state=state, changed=time.monotonic())
+        if state not in {"pending", "ok"}:
+            print(f"TEMLI Telegram {operation}: {state}", flush=True)
+
+    def stage(self, value):
+        with self.lock:
+            self.start_stage = value
+        print(f"TEMLI /start: {value}", flush=True)
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "start_stage": self.start_stage,
+                "requests": {name: {
+                    "state": item["state"], "attempts": item["attempts"],
+                    "state_age_seconds": round(time.monotonic() - item["changed"], 1),
+                } for name, item in self.operations.items()},
+            }
+
+
+class ObservedTelegramRequest(HTTPXRequest):
+    def __init__(self, diagnostics, **kwargs):
+        self.diagnostics = diagnostics
+        super().__init__(**kwargs)
+
+    async def do_request(self, url, method, **kwargs):
+        operation = url.rsplit("/", 1)[-1]
+        self.diagnostics.record(operation, "pending")
+        try:
+            result = await super().do_request(url=url, method=method, **kwargs)
+        except Exception as error:
+            self.diagnostics.record(operation, type(error).__name__)
+            raise
+        code = result[0]
+        self.diagnostics.record(operation, "ok" if code == 200 else f"http_{code}")
+        return result
 
 
 @contextmanager
@@ -63,17 +117,15 @@ def run(host):
         os.makedirs(host.RECEIPT_ASSETS_DIR, exist_ok=True)
         os.makedirs(host.RECEIPTS_DIR, exist_ok=True)
         host.init_book()
+        diagnostics = TelegramDiagnostics()
+        host.TELEGRAM_DIAGNOSTICS = diagnostics
         app = (
             host.Application.builder()
             .token(host.TOKEN)
-            .connect_timeout(30)
-            .read_timeout(30)
-            .write_timeout(30)
-            .pool_timeout(30)
-            .get_updates_connect_timeout(30)
-            .get_updates_read_timeout(45)
-            .get_updates_write_timeout(30)
-            .get_updates_pool_timeout(30)
+            .request(ObservedTelegramRequest(diagnostics, connect_timeout=30,
+                     read_timeout=30, write_timeout=30, pool_timeout=30))
+            .get_updates_request(ObservedTelegramRequest(diagnostics, connection_pool_size=1,
+                     connect_timeout=30, read_timeout=45, write_timeout=30, pool_timeout=30))
             .post_init(host.post_init)
             .post_stop(host.post_stop)
             .build()

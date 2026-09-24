@@ -169,6 +169,7 @@ READINESS_LOCK = threading.Lock()
 READINESS_CACHE = {"expires_at": 0.0, "status_code": 503, "payload": None}
 
 BOT_APPLICATION = None
+TELEGRAM_DIAGNOSTICS = None
 BOT_LOOP = None
 REMINDER_TASK = None
 
@@ -2216,11 +2217,27 @@ def health():
         "status": "ok",
         "message": "API работает",
         "release": BOT3_RELEASE_ID,
+        "telegram": telegram_diagnostic_snapshot(),
         "storage": "remote-json-test" if REMOTE_STORAGE else "local",
         "capabilities": ["request-json-cache-v1", "bootstrap-v1",
                          "self-hosted-frontend-v1", "readiness-v1",
                          "release-id-v1"],
     })
+
+
+def telegram_diagnostic_snapshot():
+    snapshot = (TELEGRAM_DIAGNOSTICS.snapshot() if TELEGRAM_DIAGNOSTICS
+                else {"start_stage": "not_received", "requests": {}})
+    application = BOT_APPLICATION
+    snapshot["initialized"] = application is not None
+    snapshot["application_running"] = bool(application and application.running)
+    snapshot["polling_running"] = bool(application and application.updater and application.updater.running)
+    return snapshot
+
+
+def trace_start(stage):
+    if TELEGRAM_DIAGNOSTICS:
+        TELEGRAM_DIAGNOSTICS.stage(stage)
 
 
 @flask_app.route("/api/ready", methods=["GET"])
@@ -4160,6 +4177,7 @@ async def post_init(application: Application):
     global BOT_APPLICATION, BOT_LOOP, REMINDER_TASK
     BOT_APPLICATION = application
     BOT_LOOP = asyncio.get_running_loop()
+    print("TEMLI Telegram: initialized", flush=True)
     # post_init выполняется до перехода Application в running-state, поэтому
     # Application.create_task() здесь создаёт предупреждение PTB. Храним обычную
     # asyncio-задачу и явно завершаем её в post_stop.
@@ -4184,7 +4202,10 @@ async def reply_text_with_retry(message, text, **kwargs):
     """Retry transient BotHost-to-Telegram connection failures."""
     for attempt in range(3):
         try:
-            return await message.reply_text(text, **kwargs)
+            trace_start("sending_reply")
+            result = await message.reply_text(text, **kwargs)
+            trace_start("reply_sent")
+            return result
         except (TimedOut, NetworkError):
             if attempt == 2:
                 raise
@@ -4192,6 +4213,15 @@ async def reply_text_with_retry(message, text, **kwargs):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    trace_start("received")
+    try:
+        await handle_start(update, context)
+    except Exception as error:
+        trace_start("error_" + type(error).__name__)
+        raise
+
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     from invitation_channels import accept_main, recipient_only
     raw = context.args[0] if context.args else ''
@@ -4201,10 +4231,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if reply:
             await reply_text_with_retry(update.message, reply)
         return
+    trace_start("checking_recipient")
     if recipient_only(sys.modules[__name__], str(u.id)):
         await reply_text_with_retry(update.message, 'Здесь будут сообщения о занятиях. Для подключения к другому преподавателю откройте его приглашение.')
         return
     # Ordinary entry registers a teacher; invitation visitors were handled above.
+    trace_start("registering_teacher")
     ensure_teacher_registered(str(u.id), {
         "id": str(u.id),
         "first_name": u.first_name or "",
@@ -4212,6 +4244,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "username": u.username or "",
     })
 
+    trace_start("loading_settings")
     with teacher_scope(str(u.id)):
         language = load_settings().get("language", "ru")
     ready_text = "TEMLI is ready." if language == "en" else "TEMLI готов к работе."
