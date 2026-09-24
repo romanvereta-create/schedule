@@ -41,6 +41,7 @@ import threading
 import time
 import shutil
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import parse_qsl
@@ -71,6 +72,7 @@ from consent_ledger import (
 )
 
 CALENDAR_UNDO = CalendarUndo()
+RECEIPT_SEND_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="receipt-send")
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1272,6 +1274,27 @@ def send_receipt_from_flask(chat_id, pdf_path, caption, filename=None):
         return True, ""
     except Exception as exc:
         return False, str(exc)
+
+
+def send_receipt_jobs(jobs):
+    """Send independent Telegram copies in parallel and preserve job order."""
+    if not jobs:
+        return []
+    results = [None] * len(jobs)
+    futures = {
+        RECEIPT_SEND_POOL.submit(
+            send_receipt_from_flask,
+            job["chat_id"], job["path"], job["caption"], job.get("filename"),
+        ): index
+        for index, job in enumerate(jobs)
+    }
+    for future in as_completed(futures):
+        index = futures[future]
+        try:
+            results[index] = future.result()
+        except Exception as exc:
+            results[index] = (False, str(exc))
+    return results
 
 
 def delete_receipt_file(pdf_path):
@@ -3520,22 +3543,35 @@ def mark_paid():
         failed_names = []
         teacher_sent_names = []
         teacher_failed_names = []
+        delivery_jobs = []
         for job in receipt_jobs:
-            try:
-                if send_receipt:
-                    if job["parent_chat_id"] is None:
-                        failed_names.append(job["name"])
-                    else:
-                        ok, _error = send_receipt_from_flask(job["parent_chat_id"], job["path"], job["parent_caption"])
-                        (sent_names if ok else failed_names).append(job["name"])
+            if send_receipt:
+                if job["parent_chat_id"] is None:
+                    failed_names.append(job["name"])
+                else:
+                    delivery_jobs.append({
+                        "kind": "parent", "name": job["name"],
+                        "chat_id": job["parent_chat_id"], "path": job["path"],
+                        "caption": job["parent_caption"],
+                    })
+            if send_teacher_copy:
+                if teacher_chat_id is None:
+                    teacher_failed_names.append(job["name"])
+                else:
+                    delivery_jobs.append({
+                        "kind": "teacher", "name": job["name"],
+                        "chat_id": teacher_chat_id, "path": job["path"],
+                        "caption": job["teacher_caption"],
+                    })
 
-                if send_teacher_copy:
-                    if teacher_chat_id is None:
-                        teacher_failed_names.append(job["name"])
-                    else:
-                        ok, _error = send_receipt_from_flask(teacher_chat_id, job["path"], job["teacher_caption"])
-                        (teacher_sent_names if ok else teacher_failed_names).append(job["name"])
-            finally:
+        try:
+            for delivery, (ok, _error) in zip(delivery_jobs, send_receipt_jobs(delivery_jobs)):
+                if delivery["kind"] == "parent":
+                    (sent_names if ok else failed_names).append(delivery["name"])
+                else:
+                    (teacher_sent_names if ok else teacher_failed_names).append(delivery["name"])
+        finally:
+            for job in receipt_jobs:
                 delete_receipt_file(job["path"])
 
         parts = []
@@ -3570,6 +3606,7 @@ def mark_paid():
     teacher_receipt_sent = False
     messages = []
     try:
+        delivery_jobs = []
         if send_receipt:
             student_info = get_student_record(load_json(STUDENTS_FILE), lesson.get("student_id"))
             contacts = student_info.get("contacts") or lesson.get("contacts") or {}
@@ -3578,8 +3615,7 @@ def mark_paid():
                 messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
             else:
                 caption = f"Чек об оплате занятия с {lesson.get('student', 'учеником')} на {amount:.2f} руб. № {receipt_number}"
-                receipt_sent, error = send_receipt_from_flask(chat_id, receipt_path, caption)
-                messages.append("Чек отправлен родителю." if receipt_sent else f"Родителю чек отправить не удалось: {error}")
+                delivery_jobs.append({"kind": "parent", "chat_id": chat_id, "path": receipt_path, "caption": caption})
         else:
             messages.append("Родителю чек не отправлялся.")
 
@@ -3588,8 +3624,15 @@ def mark_paid():
                 messages.append("Копия вам не отправлена: откройте этого бота и нажмите /start.")
             else:
                 teacher_caption = f"Копия чека: {lesson.get('student', 'ученик')} · {amount:.2f} руб. · № {receipt_number}"
-                teacher_receipt_sent, error = send_receipt_from_flask(teacher_chat_id, receipt_path, teacher_caption)
-                messages.append("Копия чека отправлена вам." if teacher_receipt_sent else f"Копию вам отправить не удалось: {error}")
+                delivery_jobs.append({"kind": "teacher", "chat_id": teacher_chat_id, "path": receipt_path, "caption": teacher_caption})
+
+        for delivery, (ok, error) in zip(delivery_jobs, send_receipt_jobs(delivery_jobs)):
+            if delivery["kind"] == "parent":
+                receipt_sent = ok
+                messages.append("Чек отправлен родителю." if ok else f"Родителю чек отправить не удалось: {error}")
+            else:
+                teacher_receipt_sent = ok
+                messages.append("Копия чека отправлена вам." if ok else f"Копию вам отправить не удалось: {error}")
     finally:
         delete_receipt_file(receipt_path)
 

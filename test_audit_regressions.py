@@ -49,6 +49,20 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(settings["company_name"], "saved company")
         self.assertEqual(settings["phone"], "saved phone")
 
+    def test_receipt_copies_are_sent_in_parallel_and_keep_order(self):
+        rendezvous = threading.Barrier(2)
+
+        def fake_send(chat_id, _path, _caption, _filename=None):
+            rendezvous.wait(timeout=1)
+            return True, str(chat_id)
+
+        jobs = [
+            {"chat_id": 101, "path": "one.pdf", "caption": "one"},
+            {"chat_id": 202, "path": "two.pdf", "caption": "two"},
+        ]
+        with patch.object(bot, "send_receipt_from_flask", side_effect=fake_send):
+            self.assertEqual(bot.send_receipt_jobs(jobs), [(True, "101"), (True, "202")])
+
     def test_bot3_frontend_is_public_but_server_source_is_not(self):
         client = bot.flask_app.test_client()
         index = client.get("/app/")
