@@ -86,6 +86,8 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertIn("release-id-v1", payload["capabilities"])
         startup = bot.flask_app.test_client().get("/app/startup.js")
         self.assertIn(b"health.release", startup.data)
+        self.assertEqual(startup.headers.get("Cache-Control"), "no-store")
+        self.assertIn(b"app.js?v=${assetVersion}", startup.data)
 
     def test_release_env_override_is_validated(self):
         with patch.dict(os.environ, {"TEMLI_RELEASE_ID": "bot3-2026.09.22"}):

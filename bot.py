@@ -1455,7 +1455,7 @@ def send_bot3_frontend_file(filename):
     if filename not in BOT3_FRONTEND_FILES:
         return jsonify({"status": "error", "message": "Файл не найден."}), 404
     response = send_from_directory(CODE_DIR, filename, conditional=True)
-    if filename == "index.html":
+    if filename in {"index.html", "startup.js"}:
         response.headers["Cache-Control"] = "no-store"
     else:
         response.headers["Cache-Control"] = "public, max-age=300"

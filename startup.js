@@ -25,11 +25,13 @@
     async function loadRelease() {
         try {
             const response = await fetch('/api/health', { cache: 'no-store' });
-            if (!response.ok) return;
+            if (!response.ok) return '';
             const health = await response.json();
             showRelease(health.release);
+            return String(health.release || '').trim();
         } catch (error) {
             console.warn('Не удалось определить релиз TEMLI:', error);
+            return '';
         }
     }
 
@@ -107,7 +109,7 @@
         retry.disabled = true;
         showStatus('TEMLI', 'Загрузка приложения…');
         // Release diagnostics must never delay opening the application.
-        void loadRelease();
+        const releasePromise = loadRelease();
 
         try {
             await ensureTelegramSdk();
@@ -134,8 +136,10 @@
 
         try {
             appScriptsStarted = true;
+            const release = await releasePromise;
+            const assetVersion = encodeURIComponent(release || 'fallback-20260924');
             await loadScript('i18n.js?v=1.0.0');
-            await loadScript('app.js?v=20260922-selfhost1');
+            await loadScript(`app.js?v=${assetVersion}`);
             await loadScript('ux.js?v=1.0.0');
             await loadScript('personal_notifications.js?v=1.0.0');
             await loadScript('help.js?v=1.0.0');
