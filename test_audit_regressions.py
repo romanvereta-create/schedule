@@ -5,25 +5,10 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
-
-from telegram.error import TimedOut
+from unittest.mock import patch
 
 import bot
 import test_storage
-
-
-class TelegramStartReplyTests(unittest.IsolatedAsyncioTestCase):
-    async def test_start_reply_retries_one_telegram_timeout(self):
-        sent = object()
-        message = AsyncMock()
-        message.reply_text.side_effect = [TimedOut(), sent]
-        markup = object()
-        with patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep:
-            result = await bot.reply_start_message(message, "ready", markup)
-        self.assertIs(result, sent)
-        self.assertEqual(message.reply_text.await_count, 2)
-        sleep.assert_awaited_once_with(0.5)
 
 
 class AuditRegressionTests(unittest.TestCase):

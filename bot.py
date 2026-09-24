@@ -55,7 +55,6 @@ import pytz
 from flask import Flask, jsonify, request, send_file, send_from_directory, g
 from flask_cors import CORS
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.error import TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 from fpdf import FPDF
 import openpyxl
@@ -140,15 +139,6 @@ def versioned_webapp_url():
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["v"] = BOT3_RELEASE_ID
     return urlunsplit((parts.scheme, parts.netloc, path, urlencode(query), parts.fragment))
-
-
-async def reply_start_message(message, text, reply_markup):
-    """Retry the welcome reply once when Telegram itself times out."""
-    try:
-        return await message.reply_text(text, reply_markup=reply_markup)
-    except TimedOut:
-        await asyncio.sleep(0.5)
-        return await message.reply_text(text, reply_markup=reply_markup)
 
 
 def _bounded_env_int(name, default, minimum, maximum):
@@ -4265,8 +4255,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         language = load_settings().get("language", "ru")
     ready_text = "TEMLI is ready." if language == "en" else "TEMLI готов к работе."
     open_text = "Open TEMLI" if language == "en" else "Открыть TEMLI"
-    await reply_start_message(
-        update.message,
+    await update.message.reply_text(
         ready_text,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(open_text, web_app=WebAppInfo(url=versioned_webapp_url()))
