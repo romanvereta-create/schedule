@@ -55,6 +55,7 @@ import pytz
 from flask import Flask, jsonify, request, send_file, send_from_directory, g
 from flask_cors import CORS
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 from fpdf import FPDF
 import openpyxl
@@ -4227,6 +4228,17 @@ async def post_stop(application: Application):
     BOT_LOOP = None
 
 
+async def reply_text_with_retry(message, text, **kwargs):
+    """Retry BotHost-to-Telegram connection timeouts without losing /start."""
+    for attempt in range(3):
+        try:
+            return await message.reply_text(text, **kwargs)
+        except (TimedOut, NetworkError):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(1.5 * (attempt + 1))
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     from invitation_channels import accept_main, recipient_only
@@ -4235,10 +4247,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = await asyncio.to_thread(accept_main, sys.modules[__name__], raw, u.to_dict(),
                                         update.effective_chat.to_dict(), update.update_id)
         if reply:
-            await update.message.reply_text(reply)
+            await reply_text_with_retry(update.message, reply)
         return
     if recipient_only(sys.modules[__name__], str(u.id)):
-        await update.message.reply_text('Здесь будут сообщения о занятиях. Для подключения к другому преподавателю откройте его приглашение.')
+        await reply_text_with_retry(update.message, 'Здесь будут сообщения о занятиях. Для подключения к другому преподавателю откройте его приглашение.')
         return
     # Ordinary entry registers a teacher; invitation visitors were handled above.
     ensure_teacher_registered(str(u.id), {
@@ -4252,7 +4264,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         language = load_settings().get("language", "ru")
     ready_text = "TEMLI is ready." if language == "en" else "TEMLI готов к работе."
     open_text = "Open TEMLI" if language == "en" else "Открыть TEMLI"
-    await update.message.reply_text(
+    await reply_text_with_retry(
+        update.message,
         ready_text,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(open_text, web_app=WebAppInfo(url=versioned_webapp_url()))
