@@ -76,10 +76,6 @@ def register_invite_routes(host, read_registry, registry_path, identity):
         with host.DATA_LOCK:
             records = read_registry()
             record = connection(teacher)
-            if record.get('channel') == 'main':
-                if not record.get('username'):
-                    raise bots.ConnectionError('bot_unavailable')
-                return record
             token = bots.cipher().decrypt(record["token"].encode()).decode()
             base = os.getenv("TEMLI_PUBLIC_URL", "https://bot-1787954043-4984-solo1986.bothost.tech").rstrip("/")
             parsed = urlsplit(base)
@@ -161,8 +157,6 @@ def register_invite_routes(host, read_registry, registry_path, identity):
                                         if v["expires_at"] > now and
                                         not (v["student_id"] == student_id and v["role"] == role)}
                     raw = secrets.token_urlsafe(24)
-                    if record.get('channel') == 'main':
-                        raw = 'join_' + teacher + '_' + raw
                     digest = hashlib.sha256(raw.encode()).hexdigest()
                     links["invites"][digest] = {"student_id": student_id, "role": role,
                         "connection_id": record["connection_id"], "expires_at": now + 48 * 3600}
@@ -175,7 +169,6 @@ def register_invite_routes(host, read_registry, registry_path, identity):
                 binding = links["bindings"].get(key)
                 if not binding or binding["student_id"] != student_id or binding["connection_id"] not in available:
                     raise bots.ConnectionError("binding_missing")
-                newly_active = action == 'approve' and binding.get('state') != 'active'
                 if action == "approve":
                     if binding['role'] == 'student':
                         for other in links['bindings'].values():
@@ -187,20 +180,6 @@ def register_invite_routes(host, read_registry, registry_path, identity):
                 else:
                     del links["bindings"][key]
                 host._save_json_raw(links_path(), links)
-                channel = available[binding['connection_id']]
-                confirmation = None
-                if newly_active and channel.get('channel') == 'main':
-                    english = host.load_settings().get('language') == 'en'
-                    confirmation = channels.message(host, channel,
-                        'Connection confirmed 😊 Lesson updates will arrive here.' if english else
-                        'Подключение подтверждено 😊 Теперь сообщения о занятиях будут приходить сюда.')
-            # Persist before best-effort sending, without holding the global data lock.
-            if confirmation:
-                try:
-                    bots.telegram_info(channels.token_for(host, channel), 'sendMessage', {
-                        'chat_id': binding['chat_id'], 'text': confirmation})
-                except bots.ConnectionError:
-                    pass
             return jsonify(status="ok", student=students[student_id])
         except bots.ConnectionError as error:
             return jsonify(status="error", code=str(error)), (401 if str(error) == "unauthorized" else 400)

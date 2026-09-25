@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>TEMLI — расписание</title>
-    <link rel="stylesheet" href="styles.css?v=20260925-optimistic-actions1">
+    <link rel="stylesheet" href="styles.css?v=20260925-branded-notifications1">
     <link rel="stylesheet" href="ux.css?v=1.0.0">
 </head>
 <body>
@@ -817,10 +817,16 @@
                 </div>
                 <div class="settings-mini-title">Дополнительно</div>
                 <div class="student-notification-options" data-i18n-ignore>
-                    <small id="notification-defaults-hint" class="field-hint">Для новых учеников. Существующие настройки не меняются.</small>
+                    <small id="notification-defaults-hint" class="field-hint">Доступно только после подключения брендированного бота преподавателя.</small>
                     <label class="checkbox-label settings-checkbox compact-setting-row"><input type="checkbox" id="default-reminders-enabled"><span id="default-reminders-label">Напоминать ученику о занятии</span></label>
                     <label class="checkbox-label settings-checkbox compact-setting-row"><input type="checkbox" id="default-parent-end"><span id="default-parent-end-label">Родителю об окончании</span></label>
                 </div>
+                <div class="settings-mini-title">Напоминания преподавателю</div>
+                <label class="checkbox-label settings-checkbox compact-setting-row">
+                    <input type="checkbox" id="teacher-block-reminders">
+                    <span>Напоминать перед первым занятием рабочего блока</span>
+                </label>
+                <small class="field-hint">За 30 минут. Следующее напоминание — только после перерыва больше 60 минут.</small>
                 <div class="settings-mini-title">Чеки</div>
                 <label class="checkbox-label settings-checkbox compact-setting-row">
                     <input type="checkbox" id="default-send-receipts" checked>
@@ -931,6 +937,6 @@
         </div>
     </div>
 
-    <script src="startup.js?v=20260925-optimistic-actions1"></script>
+    <script src="startup.js?v=20260925-branded-notifications1"></script>
 </body>
 </html>

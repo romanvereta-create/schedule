@@ -495,6 +495,8 @@ body {
 }
 .tap-pressed, .tap-accepted { transform: scale(.98); filter: brightness(.96); }
 .tap-accepted { outline: 2px solid rgba(26,115,232,.24); outline-offset: 1px; }
+.notification-unavailable { opacity: .58; }
+.notification-unavailable textarea, .notification-unavailable button { pointer-events: none; }
 .action-menu-btn.paid-btn { color: #2e7d32; border-color: #a5d6a7; }
 .action-menu-btn.delete-btn { color: #d93025; border-color: #f5c6cb; }
 

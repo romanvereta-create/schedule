@@ -681,6 +681,9 @@ def load_settings():
         "default_reminders_enabled": False,
         "default_student_reminders": False,
         "parent_lesson_end": False,
+        "teacher_block_reminders": False,
+        "teacher_block_reminder_minutes": 30,
+        "teacher_block_gap_minutes": 60,
         "default_send_receipts": True,
         "default_send_receipt_copy": True,
         "zoom_link": "",
@@ -727,6 +730,9 @@ def load_settings():
     settings["default_reminders_enabled"] = bool(settings.get("default_reminders_enabled", False))
     settings["default_student_reminders"] = settings.get("default_student_reminders") is True
     settings["parent_lesson_end"] = settings.get("parent_lesson_end") is True
+    settings["teacher_block_reminders"] = settings.get("teacher_block_reminders") is True
+    settings["teacher_block_reminder_minutes"] = 30
+    settings["teacher_block_gap_minutes"] = 60
     settings["default_send_receipts"] = bool(settings.get("default_send_receipts", True))
     settings["default_send_receipt_copy"] = bool(settings.get("default_send_receipt_copy", True))
     settings["onboarding_completed"] = bool(settings.get("onboarding_completed", False))
@@ -2420,7 +2426,7 @@ def update_settings():
 @serialized_data
 def update_settings_data(data):
     settings = load_settings()
-    boolean_keys = {"default_reminders_enabled", "default_student_reminders", "default_send_receipts", "default_send_receipt_copy", "onboarding_completed", "parent_lesson_end"}
+    boolean_keys = {"default_reminders_enabled", "default_student_reminders", "default_send_receipts", "default_send_receipt_copy", "onboarding_completed", "parent_lesson_end", "teacher_block_reminders"}
     notification_template_keys = {
         "student_binding_template", "parent_binding_template",
         "student_reminder_template", "parent_lesson_end_template",
@@ -3256,11 +3262,7 @@ def pay_subscription():
     messages = []
     try:
         if send_receipt:
-            if parent_chat_id is None:
-                messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
-            else:
-                ok, error = send_receipt_from_flask(parent_chat_id, receipt_path, f"Чек за абонемент: {lesson_count} занятий · {amount:.2f} руб. · № {receipt_number}")
-                messages.append("Чек отправлен родителю." if ok else f"Родителю чек отправить не удалось: {error}")
+            messages.append("Родителю чек не отправлен: отправка через общий TEMLI-бот запрещена. Поддержка файлов брендированного бота будет добавлена отдельно.")
         else:
             messages.append("Родителю чек не отправлялся.")
         if send_teacher_copy:
@@ -3549,11 +3551,7 @@ def mark_paid():
         for job in receipt_jobs:
             try:
                 if send_receipt:
-                    if job["parent_chat_id"] is None:
-                        failed_names.append(job["name"])
-                    else:
-                        ok, _error = send_receipt_from_flask(job["parent_chat_id"], job["path"], job["parent_caption"])
-                        (sent_names if ok else failed_names).append(job["name"])
+                    failed_names.append(job["name"])
 
                 if send_teacher_copy:
                     if teacher_chat_id is None:
@@ -3596,15 +3594,7 @@ def mark_paid():
     messages = []
     try:
         if send_receipt:
-            student_info = get_student_record(load_json(STUDENTS_FILE), lesson.get("student_id"))
-            contacts = student_info.get("contacts") or lesson.get("contacts") or {}
-            chat_id = numeric_telegram_chat_id(contacts.get("tg") if isinstance(contacts, dict) else "")
-            if chat_id is None:
-                messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
-            else:
-                caption = f"Чек об оплате занятия с {lesson.get('student', 'учеником')} на {amount:.2f} руб. № {receipt_number}"
-                receipt_sent, error = send_receipt_from_flask(chat_id, receipt_path, caption)
-                messages.append("Чек отправлен родителю." if receipt_sent else f"Родителю чек отправить не удалось: {error}")
+            messages.append("Родителю чек не отправлен: отправка через общий TEMLI-бот запрещена. Поддержка файлов брендированного бота будет добавлена отдельно.")
         else:
             messages.append("Родителю чек не отправлялся.")
 
@@ -3998,11 +3988,7 @@ def apply_student_payment():
     try:
         if receipt_path:
             if send_receipt:
-                if parent_chat_id is None:
-                    messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
-                else:
-                    ok, error = send_receipt_from_flask(parent_chat_id, receipt_path, f"Чек: оплата занятий · {distributed:.2f} руб. · № {receipt_number}")
-                    messages.append("Чек отправлен родителю." if ok else f"Родителю чек отправить не удалось: {error}")
+                messages.append("Родителю чек не отправлен: отправка через общий TEMLI-бот запрещена. Поддержка файлов брендированного бота будет добавлена отдельно.")
             if settings.get("default_send_receipt_copy", True):
                 if teacher_chat_id is not None:
                     ok, error = send_receipt_from_flask(teacher_chat_id, receipt_path, f"Копия чека: оплата занятий · {distributed:.2f} руб. · № {receipt_number}")

@@ -5,6 +5,8 @@ be published until every bracketed field is completed and a Russian-qualified
 lawyer confirms the operator model, minors workflow, retention periods, and
 Telegram/cross-border analysis.
 
+Current technical/legal gap status: `COMPLIANCE_STATUS_2026-09-25.md`.
+
 ## Launch blockers
 
 1. Identify the personal-data operator: full legal name/status, registration

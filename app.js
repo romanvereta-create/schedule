@@ -1229,6 +1229,8 @@ function openActionMenu(date, lesson) {
     document.getElementById('btn-action-report').classList.toggle('hidden', cancelled || !lessonHasStarted(date, lesson));
     document.getElementById('btn-action-teacher-delay').classList.toggle('hidden', cancelled);
     document.getElementById('btn-action-student-delay').classList.toggle('hidden', cancelled);
+    document.getElementById('btn-action-teacher-delay').disabled = !recipientNotificationsAvailable;
+    document.getElementById('btn-action-student-delay').disabled = !recipientNotificationsAvailable;
     const settingsButton = document.getElementById('btn-action-settings');
     setThreadButtonLabel(settingsButton, isGroup ? 'edit' : 'settings', isGroup ? 'Редактировать группу' : 'Настройки занятия');
 
@@ -2758,6 +2760,7 @@ function fillAppSettingsForm() {
     document.getElementById('interface-currency').value = state.settings.currency || 'RUB';
     document.getElementById('default-reminders-enabled').checked = state.settings.default_student_reminders === true;
     document.getElementById('default-parent-end').checked = state.settings.parent_lesson_end === true;
+    document.getElementById('teacher-block-reminders').checked = state.settings.teacher_block_reminders === true;
     document.getElementById('default-zoom-link').value = state.settings.zoom_link || '';
     document.getElementById('work-start').value = state.settings.work_start || '06:00';
     document.getElementById('work-end').value = state.settings.work_end || '00:00';
@@ -2910,6 +2913,7 @@ async function uploadReceiptAsset(assetType, inputId) {
 let personalBotCurrent = null;
 let personalBotBusy = false;
 let personalBotView = null;
+let recipientNotificationsAvailable = false;
 function botText(ru, en) { return uiLocale().startsWith('en') ? en : ru; }
 function botMessage(code) {
     const messages = {
@@ -2937,9 +2941,10 @@ function renderPersonalBot(result) {
     renderPersonalBotLabels();
     personalBotCurrent = result.bot || null;
     const connected = Boolean(personalBotCurrent);
+    recipientNotificationsAvailable = connected;
     document.getElementById('personal-bot-status').textContent = !result.enabled ? botMessage('unavailable')
         : connected ? botText('Подключён: ', 'Connected: ') + personalBotCurrent.name + ' · @' + personalBotCurrent.username
-        : botText('Личный бот не подключён. Приглашения работают через TEMLI.', 'No personal bot connected. Invitations work through TEMLI.');
+        : botText('Брендированный бот не подключён. Уведомления ученикам и родителям отключены.', 'No branded bot connected. Student and parent notifications are disabled.');
     document.getElementById('personal-bot-help').hidden = connected;
     document.getElementById('personal-bot-label').hidden = connected;
     document.getElementById('personal-bot-token').hidden = connected;
@@ -2947,6 +2952,15 @@ function renderPersonalBot(result) {
     document.getElementById('personal-bot-check').disabled = !result.enabled;
     document.getElementById('personal-bot-token').disabled = !result.enabled;
     document.getElementById('personal-bot-disconnect').hidden = !connected;
+    syncRecipientNotificationAvailability();
+}
+function syncRecipientNotificationAvailability() {
+    const available = recipientNotificationsAvailable;
+    for (const id of ['default-reminders-enabled', 'default-parent-end', 'student-reminders', 'student-parent-end']) {
+        const input = document.getElementById(id);
+        if (input) input.disabled = !available;
+    }
+    document.getElementById('notification-templates-panel')?.classList.toggle('notification-unavailable', !available);
 }
 function renderPersonalBotLabels() {
     const text = (id, ru, en) => { document.getElementById(id).textContent = botText(ru, en); };
@@ -2954,8 +2968,8 @@ function renderPersonalBotLabels() {
     text('personal-bot-label', 'Токен BotFather', 'BotFather token');
     text('personal-bot-check', 'Проверить и подключить', 'Verify and connect');
     text('personal-bot-disconnect', 'Отключить', 'Disconnect');
-    text('personal-bot-help', 'Личный бот — по желанию: создайте его через /newbot в @BotFather и вставьте токен. Без него приглашения и сообщения работают через общий TEMLI-бот. Не подключайте бота другого сервиса.',
-        'A personal bot is optional: create one using /newbot in @BotFather and paste its token. Without one, invitations and messages use the shared TEMLI bot. Do not connect another service’s bot.');
+    text('personal-bot-help', 'Для сообщений ученикам и родителям обязателен отдельный брендированный бот преподавателя. Создайте его через /newbot в @BotFather и вставьте токен. Общий TEMLI-бот получателям не пишет.',
+        'A separate branded teacher bot is required for student and parent messages. Create one with /newbot in @BotFather and paste its token. The shared TEMLI bot never messages recipients.');
     text('teacher-delay-template-label', 'Я задержусь — ученику', 'My delay — to student');
     text('student-delay-template-label', 'Ученик задерживается — ученику', 'Student delay — to student');
     text('parent-delay-template-label', 'Ученик задерживается — родителю', 'Student delay — to parent');
@@ -3081,6 +3095,7 @@ document.getElementById('btn-save-app-settings').onclick = async () => {
             currency: document.getElementById('interface-currency').value || 'RUB',
             default_student_reminders: document.getElementById('default-reminders-enabled').checked,
             parent_lesson_end: document.getElementById('default-parent-end').checked,
+            teacher_block_reminders: document.getElementById('teacher-block-reminders').checked,
             zoom_link: normalizeExternalUrl(document.getElementById('default-zoom-link').value),
             work_start: workStart,
             work_end: workEnd,
@@ -3424,6 +3439,8 @@ function renderInviteBindings() {
     list.replaceChildren();
     const view = inviteView;
     if (!view || view.studentId !== inviteStudentId()) return;
+    recipientNotificationsAvailable = Boolean(view.bot_username);
+    syncRecipientNotificationAvailability();
     document.getElementById('student-bot-invites-status').textContent = view.bot_username
         ? botText('Через ', 'Via ') + '@' + view.bot_username : botMessage('bot_required');
     for (const binding of view.bindings || []) {
