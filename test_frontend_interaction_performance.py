@@ -41,12 +41,20 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
         self.assertIn("button.addEventListener('pointerdown'", reliable)
         self.assertLess(reliable.index("run(event)"), reliable.index("button.addEventListener('pointerup'"))
         self.assertIn("button.dataset.actionBusy", reliable)
+        self.assertIn("function queuePaymentMutation", self.app)
+        self.assertIn("{ lockWhilePending: false }", direct)
 
         finance = self.app[self.app.index("async function changeStudentLessonPayment"):]
         finance = finance[:finance.index("let inviteView")]
         self.assertNotIn("confirm(", finance)
         self.assertNotIn("direct: 'Отметить занятие оплаченным'", finance)
         self.assertNotIn("reverse: 'Снять оплату'", finance)
+
+    def test_move_is_optimistic_before_network_wait(self):
+        move = self.app[self.app.index("async function executeMove"):]
+        move = move[:move.index("function cancelMove")]
+        self.assertLess(move.index("applyOptimisticMove("), move.index("apiFetch('/move_lesson'"))
+        self.assertLess(move.index("cancelMove()"), move.index("apiFetch('/move_lesson'"))
 
     def test_actions_do_not_use_browser_confirmation_prompts(self):
         self.assertNotIn("confirm(", self.app)

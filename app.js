@@ -1276,7 +1276,7 @@ function openActionMenu(date, lesson) {
             row.querySelector('[data-member-action="free"]').onclick = () => setFreeStateForSelected(member.student_id, !member.free);
             row.querySelector('[data-member-action="student-chat"]').onclick = () => openStudentContactFor(member.student_id);
             row.querySelector('[data-member-action="parent-chat"]').onclick = () => openParentContactFor(member.student_id);
-            bindReliableTap(row.querySelector('[data-member-action="paid"]'), () => setGroupMemberPaidState(state.selectedLesson, member, !member.paid));
+            bindReliableTap(row.querySelector('[data-member-action="paid"]'), () => setGroupMemberPaidState(state.selectedLesson, member, !member.paid), { lockWhilePending: false });
             if (cancelled) row.querySelectorAll('.group-member-actions button').forEach(button => { button.disabled = true; });
             details.appendChild(row);
         });
@@ -1306,7 +1306,8 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
         && optimisticLesson.group_members.every(item => item.paid || item.free);
     closeActionMenu();
     applyReturnedLesson(lesson.date, lesson.id, optimisticLesson);
-    try {
+    const mutationKey = `${lesson.date}:${lesson.id}:${member.student_id}`;
+    queuePaymentMutation(mutationKey, async () => {
         const response = await apiFetch('/mark_paid', {
             method: 'POST',
             body: JSON.stringify({
@@ -1319,28 +1320,47 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
         });
         const result = await response.json();
         if (result.status !== 'ok') throw new Error(result.message || 'Ошибка изменения оплаты');
-        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
-    } catch (error) {
+        return result.lesson;
+    }, async resultLesson => {
+        if (!applyReturnedLesson(lesson.date, lesson.id, resultLesson)) await refreshScheduleOnly();
+        scheduleWorkCenterRefresh(0);
+    }, error => {
         applyReturnedLesson(lesson.date, lesson.id, previousLesson);
         alert(error.message || 'Ошибка изменения оплаты');
-    }
+    });
 }
 
 function closeActionMenu() {
     document.getElementById('action-menu-overlay').classList.add('hidden');
 }
 
-function bindReliableTap(button, handler) {
+const paymentMutationQueues = new Map();
+
+function queuePaymentMutation(key, request, onLatestSuccess, onLatestError) {
+    const previous = paymentMutationQueues.get(key) || { tail: Promise.resolve(), version: 0 };
+    const version = previous.version + 1;
+    const entry = { tail: previous.tail, version };
+    paymentMutationQueues.set(key, entry);
+    entry.tail = previous.tail.catch(() => {}).then(request).then(result => {
+        if (paymentMutationQueues.get(key)?.version === version) onLatestSuccess(result);
+    }).catch(error => {
+        if (paymentMutationQueues.get(key)?.version === version) onLatestError(error);
+    }).finally(() => {
+        if (paymentMutationQueues.get(key)?.version === version) paymentMutationQueues.delete(key);
+    });
+}
+
+function bindReliableTap(button, handler, { lockWhilePending = true } = {}) {
     if (!button || button.dataset.reliableTap === '1') return;
     button.dataset.reliableTap = '1';
     let suppressClickUntil = 0;
     const run = event => {
-        if (button.disabled || button.dataset.actionBusy === '1') return;
-        button.dataset.actionBusy = '1';
+        if (button.disabled || (lockWhilePending && button.dataset.actionBusy === '1')) return;
+        if (lockWhilePending) button.dataset.actionBusy = '1';
         button.classList.add('tap-accepted');
         haptic('light');
         Promise.resolve(handler(event)).finally(() => {
-            button.dataset.actionBusy = '0';
+            if (lockWhilePending) button.dataset.actionBusy = '0';
             button.classList.remove('tap-accepted');
         });
     };
@@ -1430,22 +1450,77 @@ function confirmMoveTarget(newDate, newTime) {
     document.getElementById('move-modal-overlay').classList.remove('hidden');
 }
 
+function shiftIsoDate(date, days) {
+    const value = new Date(`${date}T12:00:00`);
+    value.setDate(value.getDate() + days);
+    return dateKey(value);
+}
+
+function applyOptimisticMove(lesson, pendingMove, actionType) {
+    const oldDate = lesson.date;
+    const target = JSON.parse(JSON.stringify(lesson));
+    delete target.date;
+    target.time = pendingMove.newTime;
+    delete target.reminder_sent_for;
+    if (actionType === 'copy') {
+        target.id = `pending_${Date.now()}`;
+        delete target.series_id;
+        state.schedule[pendingMove.newDate] ||= [];
+        state.schedule[pendingMove.newDate].push(target);
+        return;
+    }
+    if (actionType === 'move_all') {
+        const seriesKey = lesson.series_id || lesson.id;
+        const dayDelta = Math.round((new Date(`${pendingMove.newDate}T12:00:00`) - new Date(`${oldDate}T12:00:00`)) / 86400000);
+        const moves = [];
+        Object.keys(state.schedule || {}).sort().forEach(date => {
+            if (date < oldDate) return;
+            state.schedule[date] = (state.schedule[date] || []).filter(item => {
+                if ((item.series_id || item.id) !== seriesKey) return true;
+                moves.push([shiftIsoDate(date, dayDelta), { ...item, time: pendingMove.newTime }]);
+                return false;
+            });
+            if (!state.schedule[date].length) delete state.schedule[date];
+        });
+        moves.forEach(([date, item]) => {
+            delete item.reminder_sent_for;
+            state.schedule[date] ||= [];
+            state.schedule[date].push(item);
+        });
+        return;
+    }
+    state.schedule[oldDate] = (state.schedule[oldDate] || []).filter(item => String(item.id) !== String(lesson.id));
+    if (!state.schedule[oldDate].length) delete state.schedule[oldDate];
+    state.schedule[pendingMove.newDate] ||= [];
+    state.schedule[pendingMove.newDate].push(target);
+}
+
 async function executeMove(actionType) {
     if (!state.selectedLesson || !state.pendingMove) return;
     if (!setPendingMoveTime(state.pendingMove.newTime)) return;
+    const lesson = { ...state.selectedLesson };
+    const pendingMove = { ...state.pendingMove };
+    const previousSchedule = JSON.parse(JSON.stringify(state.schedule));
     const payload = {
-        old_date: state.selectedLesson.date,
-        id: state.selectedLesson.id,
-        new_date: state.pendingMove.newDate,
-        new_time: state.pendingMove.newTime,
+        old_date: lesson.date,
+        id: lesson.id,
+        new_date: pendingMove.newDate,
+        new_time: pendingMove.newTime,
         action_type: actionType
     };
-    const response = await apiFetch('/move_lesson', { method: 'POST', body: JSON.stringify(payload) });
-    const result = await response.json();
-    if (result.status !== 'ok') return alert(result.message || 'Ошибка переноса');
-    window.dispatchEvent(new CustomEvent('temli-calendar-changed', { detail: { token: result.undo_token, action: actionType } }));
+    applyOptimisticMove(lesson, pendingMove, actionType);
     cancelMove();
-    refreshScheduleOnly();
+    try {
+        const response = await apiFetch('/move_lesson', { method: 'POST', body: JSON.stringify(payload) });
+        const result = await response.json();
+        if (result.status !== 'ok') throw new Error(result.message || 'Ошибка переноса');
+        window.dispatchEvent(new CustomEvent('temli-calendar-changed', { detail: { token: result.undo_token, action: actionType } }));
+        await refreshScheduleOnly();
+    } catch (error) {
+        state.schedule = previousSchedule;
+        renderCalendar();
+        alert(error.message || 'Ошибка переноса');
+    }
 }
 
 function cancelMove() {
@@ -2127,7 +2202,7 @@ document.getElementById('btn-action-cancel-once').onclick = async () => {
     closeActionMenu();
     await refreshScheduleOnly();
 };
-bindReliableTap(document.getElementById('btn-action-paid'), async () => {
+bindReliableTap(document.getElementById('btn-action-paid'), () => {
     const lesson = state.selectedLesson;
     if (!lesson) return;
     const isGroup = lesson.lesson_type === 'group';
@@ -2136,14 +2211,13 @@ bindReliableTap(document.getElementById('btn-action-paid'), async () => {
     if (!isGroup && lesson.paid_via_subscription) return alert('Занятие оплачено абонементом. Снятие оплаты одного занятия заблокировано.');
     if (!isGroup && lesson.free) return alert('Сначала отмените бесплатный статус.');
 
-    const button = document.getElementById('btn-action-paid');
     const makePaid = !lesson.paid;
     const previousLesson = JSON.parse(JSON.stringify(lesson));
     const optimisticLesson = { ...lesson, paid: makePaid };
-    button.disabled = true;
     closeActionMenu();
     applyReturnedLesson(lesson.date, lesson.id, optimisticLesson);
-    try {
+    const mutationKey = `${lesson.date}:${lesson.id}:individual`;
+    queuePaymentMutation(mutationKey, async () => {
         const response = await apiFetch('/mark_paid', {
             method: 'POST',
             body: JSON.stringify({
@@ -2155,14 +2229,15 @@ bindReliableTap(document.getElementById('btn-action-paid'), async () => {
         });
         const result = await response.json();
         if (result.status !== 'ok') throw new Error(result.message || 'Ошибка изменения оплаты');
-        if (!applyReturnedLesson(lesson.date, lesson.id, result.lesson)) await refreshScheduleOnly();
-    } catch (error) {
+        return result.lesson;
+    }, async resultLesson => {
+        if (!applyReturnedLesson(lesson.date, lesson.id, resultLesson)) await refreshScheduleOnly();
+        scheduleWorkCenterRefresh(0);
+    }, error => {
         applyReturnedLesson(lesson.date, lesson.id, previousLesson);
         alert(error.message || 'Ошибка изменения оплаты');
-    } finally {
-        button.disabled = false;
-    }
-});
+    });
+}, { lockWhilePending: false });
 
 document.getElementById('btn-action-subscription').onclick = () => {
     const lesson = state.selectedLesson;
