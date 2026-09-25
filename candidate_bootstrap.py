@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 
-PINNED_COMMIT = "18e1c2f9996f2d356540067288c5ee340db83901"
+PINNED_COMMIT = "7aeb370058d45eef02cc2151be490598f72ae09e"
 RAW_BASE = (
     "https://raw.githubusercontent.com/romanvereta-create/schedule/"
     + PINNED_COMMIT
@@ -48,6 +48,7 @@ RELEASE_FILES = (
     "startup.js",
     "styles.css",
     "support.js",
+    "telegram_transport.py",
     "ux.css",
     "ux.js",
     "vendor/telegram-web-app.js",
