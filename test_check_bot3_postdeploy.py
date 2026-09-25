@@ -14,6 +14,11 @@ GOOD_RESPONSES = {
         "storage": "remote-json-test",
         "release": "bot3-test-release",
         "capabilities": sorted(smoke.BOT_CAPABILITIES),
+        "telegram": {
+            "initialized": True, "application_running": True, "polling_running": True,
+            "requests": {"getMe": {"state": "ok"},
+                         "getUpdates": {"state": "pending", "state_age_seconds": 25}},
+        },
     },
     "/api/ready": {
         "status": "ok",
@@ -70,6 +75,41 @@ class PostDeployCheckTests(unittest.TestCase):
         )
         self.assertEqual(report["status"], "error")
         self.assertIn("readiness-v1", report["checks"]["bot_health"]["error"])
+
+    def test_http_ok_does_not_hide_telegram_failure(self):
+        for value in (None, {}, {"initialized": False}):
+            with self.subTest(value=value):
+                payload = copy.deepcopy(GOOD_RESPONSES["/api/health"])
+                payload["telegram"] = value
+                with self.assertRaises(smoke.CheckError):
+                    smoke.validate_bot_health(payload)
+
+    def test_each_telegram_runtime_flag_is_required(self):
+        for field in ("initialized", "application_running", "polling_running"):
+            payload = copy.deepcopy(GOOD_RESPONSES["/api/health"])
+            payload["telegram"][field] = False
+            with self.subTest(field=field), self.assertRaises(smoke.CheckError):
+                smoke.validate_bot_health(payload)
+
+    def test_polling_errors_and_stale_requests_fail(self):
+        for update in (None, {}, {"state": "TimedOut"}, {"state": "http_409"},
+                       *({"state": "pending", "state_age_seconds": age}
+                         for age in (91, -1, True, None, float("nan"), float("inf")))):
+            payload = copy.deepcopy(GOOD_RESPONSES["/api/health"])
+            payload["telegram"]["requests"]["getUpdates"] = update
+            with self.subTest(update=update), self.assertRaises(smoke.CheckError):
+                smoke.validate_bot_health(payload)
+
+    def test_identity_must_have_succeeded(self):
+        payload = copy.deepcopy(GOOD_RESPONSES["/api/health"])
+        payload["telegram"]["requests"]["getMe"] = {"state": "TimedOut"}
+        with self.assertRaises(smoke.CheckError):
+            smoke.validate_bot_health(payload)
+
+    def test_recent_completed_poll_is_valid(self):
+        payload = copy.deepcopy(GOOD_RESPONSES["/api/health"])
+        payload["telegram"]["requests"]["getUpdates"]["state"] = "ok"
+        self.assertEqual(smoke.validate_bot_health(payload)["status"], "ok")
 
     def test_ready_requires_remote_storage_and_backup(self):
         for changed in (

@@ -2,6 +2,15 @@
 
 This is a technical inventory for legal review. It is not a privacy policy.
 
+**Location evidence pending (2026-09-24):** "Russian storage" below is the
+intended deployment role, not independently verified geography. Hostnames,
+HTTPS, environment variables and health responses do not establish physical
+location. Obtain provider evidence for primary disks, provider snapshots,
+logs and backups. Candidate replicas are local to the application host;
+running the replica worker on the Netherlands Bot3 host creates a foreign
+copy even if the primary storage is in Russia. Do not move the application
+abroad on the assumption that it holds no personal data.
+
 | Category | Typical fields | Data subjects | Purpose | Current location |
 | --- | --- | --- | --- | --- |
 | Telegram identity | numeric ID, username, role/binding | teacher, student, parent | authentication, invitations, notifications | Russian storage JSON |

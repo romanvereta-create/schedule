@@ -38,6 +38,7 @@ RELEASE_FILES = (
     "personal_notifications.js",
     "personal_notifications.py",
     "production_server.py",
+    "telegram_transport.py",
     "remote_storage.py",
     "requirements.txt",
     "startup.js",

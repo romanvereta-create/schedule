@@ -3,9 +3,8 @@ import json
 import os
 import re
 import time
-import urllib.request
-import urllib.error
 import secrets
+from telegram_transport import telegram_json, TelegramTransportError
 
 from flask import g, jsonify, request
 
@@ -23,20 +22,15 @@ def cipher():
 
 
 def telegram_info(token, method, payload=None):
-    # Never expose urllib exceptions: they can include the token-bearing URL.
+    # Never expose transport exceptions containing token/proxy URLs.
     try:
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{token}/{method}",
-            data=json.dumps(payload or {}).encode(), method="POST",
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            result = json.load(response)
+        result = telegram_json(token, method, payload, timeout=10)
         if not result.get("ok") or not isinstance(result.get("result"), (dict, bool)):
             raise ValueError()
         return result["result"]
-    except urllib.error.HTTPError as error:
+    except TelegramTransportError as error:
         if method == 'sendMessage':
-            raise ConnectionError({403:'recipient_blocked', 400:'recipient_unavailable', 401:'bot_invalid', 429:'rate_limited'}.get(error.code, 'telegram_unavailable')) from None
+            raise ConnectionError(str(error)) from None
         raise ConnectionError('telegram_unavailable') from None
     except Exception:
         raise ConnectionError("telegram_unavailable") from None

@@ -1274,6 +1274,9 @@ async def send_receipt_document(chat_id, pdf_path, caption, filename=None):
 
 
 def send_receipt_from_flask(chat_id, pdf_path, caption, filename=None):
+    from telegram_transport import telegram_proxy_url
+    if telegram_proxy_url():
+        return False, "Отправка файлов в Telegram отключена при использовании прокси."
     if BOT_LOOP is None or BOT_APPLICATION is None:
         return False, "Telegram-бот ещё не готов к отправке."
     future = asyncio.run_coroutine_threadsafe(send_receipt_document(chat_id, pdf_path, caption, filename), BOT_LOOP)

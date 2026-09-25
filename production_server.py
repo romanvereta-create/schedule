@@ -6,6 +6,7 @@ import time
 from telegram.request import HTTPXRequest
 from contextlib import contextmanager
 from pathlib import Path
+from telegram_transport import telegram_proxy_url, validate_proxy_environment, check_telegram_target
 
 
 class TelegramDiagnostics:
@@ -45,9 +46,12 @@ class TelegramDiagnostics:
 class ObservedTelegramRequest(HTTPXRequest):
     def __init__(self, diagnostics, **kwargs):
         self.diagnostics = diagnostics
-        super().__init__(**kwargs)
+        self.telegram_proxy = telegram_proxy_url()
+        super().__init__(proxy=self.telegram_proxy,
+                         httpx_kwargs={"trust_env": False, "follow_redirects": False}, **kwargs)
 
     async def do_request(self, url, method, **kwargs):
+        check_telegram_target(url, self.telegram_proxy, kwargs.get("request_data"))
         operation = url.rsplit("/", 1)[-1]
         self.diagnostics.record(operation, "pending")
         try:
@@ -94,6 +98,7 @@ def make_server(host):
 
 
 def run(host):
+    proxy = validate_proxy_environment()
     if not host.TOKEN:
         raise RuntimeError("SCHEDULE_BOT_TOKEN is required")
     if host.ALLOW_UNAUTHENTICATED:
@@ -159,6 +164,7 @@ def run(host):
             print("TEMLI production: Waitress; 1 process, 4 HTTP threads", flush=True)
             print("TEMLI storage: " + host.BASE_DIR, flush=True)
             print("TEMLI Telegram bootstrap retries: " + str(bootstrap_retries), flush=True)
+            print("TEMLI Telegram transport: " + ("proxy" if proxy else "direct"), flush=True)
             app.run_polling(bootstrap_retries=bootstrap_retries)
         finally:
             stopping.set()

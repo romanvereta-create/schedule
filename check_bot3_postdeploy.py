@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import socket
 import sys
@@ -92,11 +93,31 @@ def validate_bot_health(payload: dict[str, Any]) -> dict[str, Any]:
     release = payload.get("release")
     if not isinstance(release, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", release):
         raise CheckError("field 'release' must be a public release identifier")
+    telegram = payload.get("telegram")
+    if not isinstance(telegram, dict):
+        raise CheckError("Telegram diagnostics are missing; HTTP health alone is insufficient")
+    for field in ("initialized", "application_running", "polling_running"):
+        if telegram.get(field) is not True:
+            raise CheckError(f"Telegram {field} is not true")
+    requests = telegram.get("requests")
+    if not isinstance(requests, dict):
+        raise CheckError("Telegram request diagnostics are missing")
+    get_me = requests.get("getMe")
+    if not isinstance(get_me, dict) or get_me.get("state") != "ok":
+        raise CheckError("Telegram identity initialization has not succeeded")
+    updates = requests.get("getUpdates")
+    if not isinstance(updates, dict) or updates.get("state") not in ("ok", "pending"):
+        raise CheckError("Telegram polling request is missing or failed")
+    age = updates.get("state_age_seconds")
+    if (isinstance(age, bool) or not isinstance(age, (int, float))
+            or not math.isfinite(age) or not 0 <= age <= 90):
+        raise CheckError("Telegram polling diagnostics are stale or invalid")
     return {
         "status": "ok",
         "storage": "remote-json-test",
         "release": release,
         "capabilities": capabilities,
+        "telegram_polling": "active_snapshot",
     }
 
 

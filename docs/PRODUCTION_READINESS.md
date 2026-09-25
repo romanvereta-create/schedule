@@ -25,6 +25,12 @@ The release is blocked unless all checks return `status: ok`, the latest
 source backup is verified and younger than eight hours, and at least one
 offsite replica exists and is younger than eight hours.
 
+The health gate also requires initialized/running Telegram polling and recent
+request diagnostics. A pending long poll is normal; this snapshot is not proof
+of successful message delivery. A manual `/start` reply from the candidate
+with the old test poller stopped remains mandatory. These checks do not verify
+data residency or legal compliance; see `RUSSIA_CANDIDATE_AUDIT.md`.
+
 ## Manual launch gate
 
 - Open the candidate through its Telegram button, never by a bare browser URL.

@@ -3,8 +3,8 @@ import json
 import re
 import threading
 import time
-import urllib.request
 from pathlib import Path
+from telegram_transport import telegram_json
 
 _LOCK = threading.Lock()
 _MEMORY = {}
@@ -20,13 +20,10 @@ def configured(host):
 def send_owner(host, text):
     if not configured(host):
         return False
-    payload = json.dumps({"chat_id": str(host.OWNER_ID), "text": text}).encode()
-    request = urllib.request.Request(
-        "https://api.telegram.org/bot" + host.TOKEN + "/sendMessage",
-        data=payload, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.load(response).get("ok") is True
+        return telegram_json(host.TOKEN, "sendMessage",
+                             {"chat_id": str(host.OWNER_ID), "text": text},
+                             timeout=15).get("ok") is True
     except Exception:
         # Provider errors may contain the token URL. Never log them.
         return False
