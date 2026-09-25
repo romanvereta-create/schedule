@@ -27,6 +27,10 @@ Current technical/legal gap status: `COMPLIANCE_STATUS_2026-09-25.md`.
 
 ## Required deliverables
 
+- `COMPLIANCE_STATUS_2026-09-25.md`
+- `INFORMATION_NEEDED_FROM_OWNER.md`
+- `PROVIDER_REQUESTS.md`
+- `RKN_ACTION_PLAN.md`
 - `privacy-policy.template.md`
 - `consent.template.md`
 - `data-processing-instruction.template.md`
