@@ -487,6 +487,14 @@ body {
     background: #f8f9fa; border: 1px solid #dadce0; color: #202124; padding: 11px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; text-align: left;
 }
 .action-menu-btn:active { background: #e8eaed; }
+.action-menu-btn, .student-finance-actions button, .group-member-payment-row button {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.tap-pressed, .tap-accepted { transform: scale(.98); filter: brightness(.96); }
+.tap-accepted { outline: 2px solid rgba(26,115,232,.24); outline-offset: 1px; }
 .action-menu-btn.paid-btn { color: #2e7d32; border-color: #a5d6a7; }
 .action-menu-btn.delete-btn { color: #d93025; border-color: #f5c6cb; }
 
@@ -1699,4 +1707,3 @@ body > div[id$="-overlay"] {
     .top-next-lesson { font-size: 14px; }
     .group-member-summary { max-width: 135px; }
 }
-

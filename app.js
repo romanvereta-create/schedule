@@ -1276,7 +1276,7 @@ function openActionMenu(date, lesson) {
             row.querySelector('[data-member-action="free"]').onclick = () => setFreeStateForSelected(member.student_id, !member.free);
             row.querySelector('[data-member-action="student-chat"]').onclick = () => openStudentContactFor(member.student_id);
             row.querySelector('[data-member-action="parent-chat"]').onclick = () => openParentContactFor(member.student_id);
-            row.querySelector('[data-member-action="paid"]').onclick = () => setGroupMemberPaidState(state.selectedLesson, member, !member.paid);
+            bindReliableTap(row.querySelector('[data-member-action="paid"]'), () => setGroupMemberPaidState(state.selectedLesson, member, !member.paid));
             if (cancelled) row.querySelectorAll('.group-member-actions button').forEach(button => { button.disabled = true; });
             details.appendChild(row);
         });
@@ -1328,6 +1328,43 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
 
 function closeActionMenu() {
     document.getElementById('action-menu-overlay').classList.add('hidden');
+}
+
+function bindReliableTap(button, handler) {
+    if (!button || button.dataset.reliableTap === '1') return;
+    button.dataset.reliableTap = '1';
+    let suppressClickUntil = 0;
+    const run = event => {
+        if (button.disabled || button.dataset.actionBusy === '1') return;
+        button.dataset.actionBusy = '1';
+        button.classList.add('tap-accepted');
+        haptic('light');
+        Promise.resolve(handler(event)).finally(() => {
+            button.dataset.actionBusy = '0';
+            button.classList.remove('tap-accepted');
+        });
+    };
+    button.addEventListener('pointerdown', event => {
+        if (!event.isPrimary || button.disabled) return;
+        button.classList.add('tap-pressed');
+        suppressClickUntil = performance.now() + 800;
+        event.preventDefault();
+        event.stopPropagation();
+        run(event);
+    }, { passive: false });
+    const release = () => {
+        button.classList.remove('tap-pressed');
+    };
+    button.addEventListener('pointerup', release, { passive: true });
+    button.addEventListener('pointercancel', release, { passive: true });
+    button.addEventListener('click', event => {
+        if (performance.now() < suppressClickUntil) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+        run(event);
+    });
 }
 
 function startMove(date, lesson) {
@@ -2090,7 +2127,7 @@ document.getElementById('btn-action-cancel-once').onclick = async () => {
     closeActionMenu();
     await refreshScheduleOnly();
 };
-document.getElementById('btn-action-paid').onclick = async () => {
+bindReliableTap(document.getElementById('btn-action-paid'), async () => {
     const lesson = state.selectedLesson;
     if (!lesson) return;
     const isGroup = lesson.lesson_type === 'group';
@@ -2125,7 +2162,7 @@ document.getElementById('btn-action-paid').onclick = async () => {
     } finally {
         button.disabled = false;
     }
-};
+});
 
 document.getElementById('btn-action-subscription').onclick = () => {
     const lesson = state.selectedLesson;
@@ -3180,7 +3217,9 @@ async function loadStudentPayments(studentId) {
                 ${note ? `<p class="field-hint">${escapeHtml(uiText(note))}</p>` : ''}
                 <div class="student-finance-actions">${item.cancelled && item.source === 'unpaid' ? '' : actions}</div>`;
             row.querySelectorAll('[data-finance-action]').forEach(button => {
-                button.onclick = () => changeStudentLessonPayment(studentId, item, button.dataset.financeAction, row);
+                if (button.dataset.financeAction === 'direct' || button.dataset.financeAction === 'reverse')
+                    bindReliableTap(button, () => changeStudentLessonPayment(studentId, item, button.dataset.financeAction, row));
+                else button.onclick = () => changeStudentLessonPayment(studentId, item, button.dataset.financeAction, row);
             });
             list.appendChild(row);
         });

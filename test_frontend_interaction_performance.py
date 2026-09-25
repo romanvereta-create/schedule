@@ -30,11 +30,17 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
         self.assertNotIn("confirm(", group)
         self.assertLess(group.index("applyReturnedLesson("), group.index("apiFetch('/mark_paid'"))
 
-        direct = self.app[self.app.index("document.getElementById('btn-action-paid').onclick"):]
+        direct = self.app[self.app.index("bindReliableTap(document.getElementById('btn-action-paid')"):]
         direct = direct[:direct.index("document.getElementById('btn-action-subscription').onclick")]
         self.assertNotIn("confirm(", direct)
         self.assertNotIn("paid-confirm-overlay", direct)
         self.assertLess(direct.index("applyReturnedLesson("), direct.index("apiFetch('/mark_paid'"))
+
+        reliable = self.app[self.app.index("function bindReliableTap"):]
+        reliable = reliable[:reliable.index("function startMove")]
+        self.assertIn("button.addEventListener('pointerdown'", reliable)
+        self.assertLess(reliable.index("run(event)"), reliable.index("button.addEventListener('pointerup'"))
+        self.assertIn("button.dataset.actionBusy", reliable)
 
         finance = self.app[self.app.index("async function changeStudentLessonPayment"):]
         finance = finance[:finance.index("let inviteView")]
