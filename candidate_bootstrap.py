@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 
-PINNED_COMMIT = "7aeb370058d45eef02cc2151be490598f72ae09e"
+PINNED_COMMIT = "d3cefd3381f518e8e726c40ab42c52e2f8e4ddb8"
 RAW_BASE = (
     "https://raw.githubusercontent.com/romanvereta-create/schedule/"
     + PINNED_COMMIT
