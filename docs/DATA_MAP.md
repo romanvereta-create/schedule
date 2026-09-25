@@ -2,19 +2,16 @@
 
 This is a technical inventory for legal review. It is not a privacy policy.
 
-**Location evidence pending (2026-09-24):** "Russian storage" below is the
-intended deployment role, not independently verified geography. Hostnames,
-HTTPS, environment variables and health responses do not establish physical
-location. Obtain provider evidence for primary disks, provider snapshots,
-logs and backups. Candidate replicas are local to the application host;
-running the replica worker on the Netherlands Bot3 host creates a foreign
-copy even if the primary storage is in Russia. Do not move the application
-abroad on the assumption that it holds no personal data.
+**Deployment evidence (2026-09-25):** application `TEMLI_PROD_CANDIDATE` and
+storage `TEMLI_RUS_TEST` are shown by BotHost on the Russian nsk7 node. Provider
+evidence is still required for primary disks, provider snapshots, logs and
+backups. The replica is on the same BotHost failure domain unless the provider
+confirms otherwise. Google Drive is not used by this new Russian contour.
 
 | Category | Typical fields | Data subjects | Purpose | Current location |
 | --- | --- | --- | --- | --- |
 | Telegram identity | numeric ID, username, role/binding | teacher, student, parent | authentication, invitations, notifications | Russian storage JSON |
-| Student profile | name/alias, contacts, birthday, notes, board link | student, parent | lesson management and communication | Russian storage JSON |
+| Student profile | name/alias, Telegram identity, phone, parent name, notes, lesson link | student, parent | lesson management and communication | Russian storage JSON |
 | Schedule | dates, times, attendance/status, group membership | teacher, student | calendar and reminders | Russian storage JSON |
 | Financial records | lesson price, payment status, package allocation, reversals | teacher, student/customer | teacher accounting and receipts | Russian storage JSON/XLSX |
 | Receipt settings | business identity, tax/bank details, logo/signature/QR | teacher/operator | receipt generation | Russian storage JSON/files |
@@ -31,14 +28,15 @@ abroad on the assumption that it holds no personal data.
    storage API.
 4. Storage creates integrity-checked archives; the candidate downloads verified
    copies into its persistent replica directory.
-5. Telegram may receive reminders, receipts, and exports initiated by an
-   authorized teacher.
+5. Telegram may receive minimized reminders through a teacher's branded bot.
+   The Bot API TLS connection is transported through an Estonian proxy; the
+   database, files and backups are not routed through it.
 
 ## Decisions required before promotion
 
 - identify the legal operator/controller and publish its full contact details;
 - define legal grounds and separate consent where required;
-- define retention per category, including backups and deletion requests;
+- apply `legal/retention-matrix.draft.md`, including backups and deletion requests;
 - decide rules for minors and parent/guardian contacts;
 - document processors/hosting providers and cross-border transfers, if any;
 - define the subject-request and incident-notification process;
