@@ -2229,6 +2229,7 @@ def health():
         "telegram": telegram_diagnostic_snapshot(),
         "storage": "remote-json-test" if REMOTE_STORAGE else "local",
         "capabilities": ["request-json-cache-v1", "bootstrap-v1",
+                         "storage-http-pool-v1",
                          "self-hosted-frontend-v1", "readiness-v1",
                          "release-id-v1"],
     })
