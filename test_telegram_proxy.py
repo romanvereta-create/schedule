@@ -15,14 +15,16 @@ class ProxyConfigTests(unittest.TestCase):
     def test_storage_does_not_use_telegram_proxy(self):
         from remote_storage import RemoteJsonStorage
         with patch.dict(os.environ, {"TELEGRAM_PROXY_URL": "socks5://proxy:1080"}), \
-                patch("remote_storage.urllib.request.urlopen", return_value=io.BytesIO(
-                    b'{"status":"ok","exists":true,"data":{},"version":"1"}')) as direct, \
-                patch("telegram_transport.httpx.Client") as telegram:
+                patch("remote_storage.httpx.Client") as direct:
+            response = direct.return_value.post.return_value
+            response.status_code = 200
+            response.content = b'{"status":"ok","exists":true,"data":{},"version":"1"}'
             storage = RemoteJsonStorage("https://storage.example", "x" * 40)
             self.assertEqual(storage.read_json("test.json", {}), {})
-            self.assertEqual(direct.call_args.args[0].full_url,
-                             "https://storage.example/v1/json/read")
-            telegram.assert_not_called()
+            self.assertEqual(direct.call_args.kwargs["base_url"], "https://storage.example")
+            self.assertFalse(direct.call_args.kwargs["trust_env"])
+            self.assertNotIn("proxy", direct.call_args.kwargs)
+            direct.return_value.post.assert_called_once()
 
     def test_supported_urls_and_absent(self):
         for value in ("", "http://user:pass@proxy.example:3128",

@@ -16,6 +16,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+import httpx
 from pathlib import PurePosixPath
 from urllib.parse import quote, urlsplit
 
@@ -60,36 +61,47 @@ class RemoteJsonStorage:
         self._versions = {}
         self._file_versions = {}
         self._lock = threading.RLock()
-
-    def _request(self, endpoint, payload):
-        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        req = urllib.request.Request(
-            self.base_url + endpoint,
-            data=raw,
-            method="POST",
+        # Reuse TLS connections between the application and the Russian
+        # storage service.  A payment or calendar mutation performs several
+        # authenticated storage operations; opening a new HTTPS connection
+        # for each one made BotHost's occasional TLS stalls cumulative.
+        # trust_env=False is intentional: TELEGRAM_PROXY_URL (and any host
+        # proxy variables) must never route storage or personal data.
+        self._http = httpx.Client(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(self.timeout),
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=8,
+                                keepalive_expiry=30.0),
+            follow_redirects=False,
+            trust_env=False,
             headers={
                 "Authorization": "Bearer " + self.token,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
         )
+
+    def _request(self, endpoint, payload):
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout, context=ssl.create_default_context()) as response:
-                raw_response = response.read(12 * 1024 * 1024 + 1)
-                if len(raw_response) > 12 * 1024 * 1024:
-                    raise RemoteStorageError('storage_response_too_large')
-                result = json.loads(raw_response)
-        except urllib.error.HTTPError as error:
-            try:
-                body = json.loads(error.read())
-                code = str(body.get("code", "remote_error"))
-            except Exception:
-                code = "remote_error"
-            finally:
-                error.close()
-            if error.code == 409:
-                raise RemoteStorageConflict(code) from None
-            raise RemoteStorageError(code) from None
+            response = self._http.post(endpoint, content=raw)
+            raw_response = response.content
+            if len(raw_response) > 12 * 1024 * 1024:
+                raise RemoteStorageError('storage_response_too_large')
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                    code = str(body.get("code", "remote_error"))
+                except (ValueError, AttributeError):
+                    code = "remote_error"
+                if response.status_code == 409:
+                    raise RemoteStorageConflict(code)
+                raise RemoteStorageError(code)
+            result = json.loads(raw_response)
+        except RemoteStorageError:
+            raise
+        except httpx.HTTPError as error:
+            raise RemoteStorageError("storage_unavailable") from error
         except (OSError, ValueError, json.JSONDecodeError) as error:
             raise RemoteStorageError("storage_unavailable") from error
         if not isinstance(result, dict) or result.get("status") != "ok":
