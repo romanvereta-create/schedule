@@ -125,7 +125,10 @@ function uxEndTime(time, duration) {
                 uxMessage(uxText('Не удалось подтвердить отмену. Обновите расписание и проверьте результат.', 'Could not confirm undo. Reload the schedule and check the result.'));
             }
         };
-        undoTimer = setTimeout(() => undo.hidden = true,20000);
+        // Keep the calendar unobstructed on phones. Five seconds is enough to
+        // catch an accidental move and use Undo without leaving a persistent
+        // banner over the next lesson.
+        undoTimer = setTimeout(() => undo.hidden = true,5000);
     });
 
     const toolbar = document.createElement('div');
