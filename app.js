@@ -279,27 +279,36 @@ async function apiFetch(path, options = {}) {
             signal: controller.signal
         });
         status = response.status;
-        if (status === 401 || status === 403) throw Object.assign(new Error(), { networkCode: 'auth' });
-        if (status >= 500 || status === 429) throw Object.assign(new Error(), { networkCode: 'http' });
         // Read the entire response under the deadline, including a stalled response body.
         const body = await response.arrayBuffer();
         const buffered = new Response(body, {status, statusText: response.statusText, headers: response.headers});
+        let parsedJson = null;
         if (response.headers.get('content-type')?.includes('application/json')) {
-            try { JSON.parse(new TextDecoder().decode(body)); }
+            try { parsedJson = JSON.parse(new TextDecoder().decode(body)); }
             catch (_) { throw Object.assign(new Error(), { networkCode: 'invalid_response' }); }
         } else if (!path.startsWith('/download_') && !path.startsWith('/export_')) {
             throw Object.assign(new Error(), { networkCode: 'invalid_response' });
         }
+        if (status === 401 || status === 403) {
+            throw Object.assign(new Error(), { networkCode: 'auth' });
+        }
+        if (status >= 500 || status === 429) {
+            throw Object.assign(new Error(parsedJson?.message || ''), {
+                networkCode: 'http', serverMessage: parsedJson?.message || ''
+            });
+        }
         return buffered;
     } catch (error) {
         const code = error.networkCode || (navigator.onLine === false ? 'offline' : controller.signal.aborted ? 'timeout' : 'network');
-        const uncertain = !readOnly && code !== 'auth';
+        const uncertain = !readOnly && ['offline', 'timeout', 'network', 'invalid_response'].includes(code);
         if (!quiet) reportNetworkFailure(code, path, status, uncertain);
         const message = code === 'auth'
             ? networkText('Откройте приложение заново через Telegram-бота.', 'Reopen the app through the Telegram bot.')
+            : error.serverMessage
+                ? error.serverMessage
             : uncertain
                 ? networkText('Ответ не получен. Перед повторением проверьте результат действия.', 'No response received. Check the action’s result before repeating it.')
-                : networkText('Не удалось загрузить данные. Повторите загрузку.', 'Could not load data. Retry loading.');
+                : networkText('Сервер не выполнил действие. Повторите попытку.', 'The server did not complete the action. Try again.');
         throw Object.assign(new Error(message), {networkCode: code});
     } finally { clearTimeout(timer); }
 }
@@ -1057,6 +1066,7 @@ function renderCalendar() {
                     : moveTargetDayOff ? uiText('Перенести на выходной') : uiText('Перенести сюда');
             }
             slot.addEventListener('click', () => {
+                if (performance.now() < suppressCalendarSlotClickUntil) return;
                 if (state.isMoving) {
                     if (!moveTargetAvailable) return;
                     confirmMoveTarget(key, time);
@@ -1333,7 +1343,12 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
     });
 }
 
+let suppressCalendarSlotClickUntil = 0;
+
 function closeActionMenu() {
+    // Android WebView may synthesize a click on the calendar cell underneath
+    // after the pressed action button hides this overlay on pointerdown.
+    suppressCalendarSlotClickUntil = performance.now() + 800;
     document.getElementById('action-menu-overlay').classList.add('hidden');
 }
 

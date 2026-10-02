@@ -52,6 +52,19 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
         self.assertNotIn("direct: 'Отметить занятие оплаченным'", finance)
         self.assertNotIn("reverse: 'Снять оплату'", finance)
 
+    def test_server_errors_are_not_reported_as_lost_responses(self):
+        api = self.app[self.app.index("async function apiFetch"):]
+        api = api[:api.index("const PENDING_STUDENT_PAYMENT_KEY")]
+        self.assertLess(api.index("await response.arrayBuffer()"), api.index("status >= 500"))
+        self.assertIn("serverMessage: parsedJson?.message", api)
+        self.assertIn("['offline', 'timeout', 'network', 'invalid_response'].includes(code)", api)
+
+    def test_action_menu_tap_cannot_fall_through_to_empty_calendar_slot(self):
+        self.assertIn("if (performance.now() < suppressCalendarSlotClickUntil) return;", self.app)
+        close_menu = self.app[self.app.index("function closeActionMenu"):]
+        close_menu = close_menu[:close_menu.index("function showPaymentSavedNotice")]
+        self.assertIn("suppressCalendarSlotClickUntil = performance.now() + 800", close_menu)
+
     def test_move_is_optimistic_before_network_wait(self):
         move = self.app[self.app.index("async function executeMove"):]
         move = move[:move.index("function cancelMove")]

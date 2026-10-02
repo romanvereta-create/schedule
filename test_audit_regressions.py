@@ -144,6 +144,21 @@ class AuditRegressionTests(unittest.TestCase):
                 bot.init_book()
             self.assertFalse(Path(bot.current_book_file()).exists())
 
+    def test_receipt_font_cache_uses_writable_temporary_directory(self):
+        self.assertEqual(bot.fpdf_module.FPDF_CACHE_MODE, 2)
+        self.assertEqual(bot.fpdf_module.FPDF_CACHE_DIR, bot.FPDF_CACHE_DIR)
+        self.assertNotEqual(Path(bot.FPDF_CACHE_DIR).resolve().parent, Path(bot.CODE_DIR).resolve())
+        receipt_dir = os.path.join(bot.BASE_DIR, "receipts")
+        with bot.teacher_scope("audit"), patch.object(bot, "RECEIPTS_DIR", receipt_dir):
+            path, number, _created = bot.generate_receipt_pdf(
+                bot.load_settings(), "Тест", 500, "read-only-image-regression"
+            )
+            try:
+                self.assertTrue(Path(path).is_file())
+                self.assertTrue(number)
+            finally:
+                bot.delete_receipt_file(path)
+
     def test_failed_asset_replace_preserves_existing_bytes_and_settings(self):
         with bot.teacher_scope("audit"):
             assets = Path(bot.current_receipt_assets_dir())

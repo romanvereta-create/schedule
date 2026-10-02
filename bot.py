@@ -57,6 +57,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppI
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 from fpdf import FPDF
+import fpdf.fpdf as fpdf_module
 import openpyxl
 from PIL import Image, ImageOps, UnidentifiedImageError
 from openpyxl.styles import Font, Alignment, Border, Side
@@ -74,6 +75,15 @@ from consent_ledger import (
 CALENDAR_UNDO = CalendarUndo()
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# pyfpdf 1.7.2 writes generated Unicode font metrics next to the source TTF by
+# default. Production runs with a read-only application image, so the first
+# receipt would otherwise fail with EROFS. Keep this non-personal cache in the
+# container's writable tmpfs instead.
+FPDF_CACHE_DIR = os.path.join(tempfile.gettempdir(), "temli-fpdf-cache")
+os.makedirs(FPDF_CACHE_DIR, exist_ok=True)
+fpdf_module.FPDF_CACHE_MODE = 2
+fpdf_module.FPDF_CACHE_DIR = FPDF_CACHE_DIR
 
 
 def resolve_public_release_id():
