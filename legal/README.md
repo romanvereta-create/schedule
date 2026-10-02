@@ -5,12 +5,12 @@ be published until every bracketed field is completed and a Russian-qualified
 lawyer confirms the operator model, minors workflow, retention periods, and
 Telegram/cross-border analysis.
 
-Current technical/legal gap status: `COMPLIANCE_STATUS_2026-09-25.md`.
+Current technical/legal gap status: `COMPLIANCE_STATUS_2026-09-25.md` (updated 02.10.2026).
 
 ## Launch blockers
 
-1. Identify the personal-data operator: full legal name/status, registration
-   details, address, email, and responsible person.
+1. Confirm the responsible person (proposed: the individual entrepreneur) and
+   the permanent public domain; the operator details are already recorded.
 2. Submit the Roskomnadzor operator notification before processing unless
    counsel documents a specific statutory exception.
 3. Approve and publish the personal-data policy, separate consent, user
@@ -31,6 +31,8 @@ Current technical/legal gap status: `COMPLIANCE_STATUS_2026-09-25.md`.
 - `COMPLIANCE_STATUS_2026-09-25.md`
 - `INFORMATION_NEEDED_FROM_OWNER.md`
 - `PROVIDER_REQUESTS.md`
+- `SELECTEL_152_EVIDENCE.md`
+- `INTERNATIONAL_SALES_READINESS.md`
 - `RKN_ACTION_PLAN.md`
 - `STEP_BY_STEP_LAUNCH_PLAN.md`
 - `privacy-policy.template.md`

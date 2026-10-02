@@ -2,16 +2,18 @@
 
 This is a technical inventory for legal review. It is not a privacy policy.
 
-**Deployment evidence (2026-09-25):** application `TEMLI_PROD_CANDIDATE` and
-storage `TEMLI_RUS_TEST` are shown by BotHost on the Russian nsk7 node. Provider
-evidence is still required for primary disks, provider snapshots, logs and
-backups. The replica is on the same BotHost failure domain unless the provider
-confirms otherwise. Google Drive is not used by this new Russian contour.
+**Deployment evidence (2026-10-02):** application, Mini App, storage and local
+backups run on Selectel VDS `temli-prod`, selected location Moscow `ru-2c`, IP
+`135.106.173.105`. Provider evidence is still required for physical disks,
+provider snapshots, logs and backups and for applicability of Selectel's 152-FZ
+documents to the VDS product. `storage`, `backups` and `replica` are currently on
+the same VDS; there is no independent offsite copy yet. Google Drive and the old
+BotHost projects are not part of this contour.
 
 | Category | Typical fields | Data subjects | Purpose | Current location |
 | --- | --- | --- | --- | --- |
-| Telegram identity | numeric ID, username, role/binding | teacher, student, parent | authentication, invitations, notifications | Russian storage JSON |
-| Student profile | name/alias, Telegram identity, phone, parent name, notes, lesson link | student, parent | lesson management and communication | Russian storage JSON |
+| Telegram identity | numeric ID, username, role/binding | teacher, student, parent | authentication, invitations, notifications | Selectel VDS JSON in Russia |
+| Student profile | name/alias, Telegram identity, phone, parent name, notes, lesson link | student, parent | lesson management and communication | Selectel VDS JSON in Russia |
 | Schedule | dates, times, attendance/status, group membership | teacher, student | calendar and reminders | Russian storage JSON |
 | Financial records | lesson price, payment status, package allocation, reversals | teacher, student/customer | teacher accounting and receipts | Russian storage JSON/XLSX |
 | Receipt settings | business identity, tax/bank details, logo/signature/QR | teacher/operator | receipt generation | Russian storage JSON/files |
@@ -22,12 +24,13 @@ confirms otherwise. Google Drive is not used by this new Russian contour.
 
 ## Data flows
 
-1. Telegram provides signed WebApp initialization data to the candidate.
-2. The candidate validates it and resolves the tenant/role.
-3. The candidate reads and writes tenant data through the authenticated Russian
-   storage API.
-4. Storage creates integrity-checked archives; the candidate downloads verified
-   copies into its persistent replica directory.
+1. Telegram provides signed WebApp initialization data to `temli-prod`.
+2. The application validates it and resolves the tenant/role.
+3. The application reads and writes tenant data through a storage service on the
+   private Docker network of the same Russian VDS.
+4. Storage creates integrity-checked archives in `/var/lib/temli/backups`; a
+   local replica exists in `/var/lib/temli/replica`. Both share the server's
+   failure domain until a separate Russian offsite target is configured.
 5. Telegram may receive minimized reminders through a teacher's branded bot.
    The Bot API TLS connection is transported through an Estonian proxy; the
    database, files and backups are not routed through it.

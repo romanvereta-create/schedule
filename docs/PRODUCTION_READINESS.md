@@ -1,61 +1,47 @@
 # TEMLI production readiness
 
-This document is the release gate for the new production candidate. It does
-not authorize changes to the legacy production bot.
+This document is the release gate for the Selectel deployment. It does not authorize restarting or reusing any deprecated BotHost environment.
 
-## Protected environments
+## Current environment
 
-- Legacy production: `bot-1787954043-4984-solo1986.bothost.tech`. Never
-  update, restart, or reconfigure it as part of candidate work.
-- Production candidate: `bot-1790109000-5632-solo1986.bothost.tech`.
-- Russian storage: `bot-1789853066-7755-solo1986.bothost.tech`.
-- Bot3 test environment: `bot-1789984567-3598-solo1986.bothost.tech`.
+- Server: Selectel VDS `temli-prod`.
+- Selected location: Moscow, `ru-2c`.
+- Public IP: `135.106.173.105`.
+- Public application URL: `https://temli.135-106-173-105.sslip.io/app/`.
+- Storage: private Docker network; no public storage port.
+- Persistent directories: `/var/lib/temli/storage`, `/var/lib/temli/backups`, `/var/lib/temli/replica`.
+- Telegram: Bot API only through `TELEGRAM_PROXY_URL`; all other application traffic direct.
 
 ## Automated launch gate
 
-Run from a trusted workstation:
+The release is blocked unless health/ready checks return `status: ok`, Telegram polling is running, the newest local backup is verified and recent, and restore validation succeeds.
 
-```text
-python check_bot3_postdeploy.py \
-  --bot-base-url https://bot-1790109000-5632-solo1986.bothost.tech \
-  --storage-base-url https://bot-1789853066-7755-solo1986.bothost.tech
-```
-
-The release is blocked unless all checks return `status: ok`, the latest
-source backup is verified and younger than eight hours, and at least one
-offsite replica exists and is younger than eight hours.
-
-The health gate also requires initialized/running Telegram polling and recent
-request diagnostics. A pending long poll is normal; this snapshot is not proof
-of successful message delivery. A manual `/start` reply from the candidate
-with the old test poller stopped remains mandatory. These checks do not verify
-data residency or legal compliance; see `RUSSIA_CANDIDATE_AUDIT.md`.
+Local `backups` and `replica` are not an offsite copy because they reside on the same VDS. Before real-user production, require a verified encrypted copy in another Russian failure domain.
 
 ## Manual launch gate
 
-- Open the candidate through its Telegram button, never by a bare browser URL.
-- Verify calendar load, student selection, lesson opening, settings, and close/reopen.
-- Perform one controlled create/edit/delete cycle using an explicitly named
-  test record. Do not use a real student's identity.
-- Verify payment, receipt, reversal, and accounting-book behavior only in an
-  approved test tenant because candidate and Bot3 share storage.
-- Confirm that the legacy production bot remains online and unchanged.
-- Record the candidate release identifier returned by `/api/health`.
+- Open the Mini App through the current Telegram bot button.
+- Verify calendar load, student selection, lesson opening, settings and close/reopen.
+- Create, edit and delete only an explicitly named test record.
+- Verify payment, reversal, drag-and-drop and receipt behavior.
+- Verify one `/start` reply and branded-bot behavior.
+- Confirm that automatic student/parent messages are unavailable without a branded teacher bot.
+- Record the deployed Git commit/image and the public release identifier.
 
-## Promotion gate
+## Legal launch gate
 
-Promotion requires all of the following:
+Before the first real teacher, student or parent:
 
-- seven consecutive days without a severity-1 or severity-2 incident;
-- a successful isolated restore drill from the newest verified archive;
-- approved privacy policy, user agreement, consent wording, and data-retention rules;
-- an identified operator/contact for personal-data requests and incidents;
-- a written rollback owner and a tested rollback procedure;
-- no unresolved P0/P1 security findings.
+- Selectel's processing instruction is signed and its applicability to VDS is confirmed;
+- the Roskomnadzor operator notification is filed;
+- Telegram cross-border processing is cleared or disabled for real data;
+- privacy policy, terms, consents and teacher processing instruction are approved and published;
+- minors workflow is approved;
+- offsite Russian backup and restore are tested;
+- internal ISPDn acts and incident procedures are signed.
+
+See `legal/COMPLIANCE_STATUS_2026-09-25.md`, `legal/SELECTEL_152_EVIDENCE.md`, and `legal/INTERNATIONAL_SALES_READINESS.md`.
 
 ## Evidence to retain
 
-Keep only non-sensitive evidence: timestamp, public release identifier,
-health-check result, backup count/age, restore-drill result, and approver. Never
-copy storage tokens, Telegram tokens, student names, contacts, notes, receipts,
-or archive contents into release logs.
+Keep only non-sensitive evidence: timestamp, release identifier, health result, backup age/count, restore result and approver. Never copy tokens, student names, contacts, notes, receipts, archive contents or proxy credentials into release logs.

@@ -24,9 +24,9 @@
 
 - A leaked Telegram or storage credential is rotated at its issuing system;
   editing source code is not a credential rotation.
-- A bad candidate release is rolled back by reverting the offending commit in
-  `schedule-production-candidate`, pushing the revert to `main`, then using
-  BotHost “Update from Git”. Avoid force-pushes and destructive Git resets.
+- A bad release is rolled back by redeploying the last known-good image/commit
+  on Selectel VDS `temli-prod`. Record the exact image/commit before changing
+  containers. Avoid force-pushes and destructive Git resets.
 - Storage restore is never the first reaction to an application bug. Stop
   writes, take a fresh safety backup, verify the selected archive, and restore
   only after the incident owner approves the exact target.
