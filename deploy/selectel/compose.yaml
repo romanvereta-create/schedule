@@ -11,13 +11,14 @@ services:
     environment:
       PORT: "8080"
       TEMLI_DATA_DIR: /data
-      TEMLI_BACKUP_DIR: /data/backups
+      TEMLI_BACKUP_DIR: /backups
       TEMLI_STORAGE_INITIALIZE_EMPTY: "true"
       TEMLI_BACKUP_INTERVAL_SECONDS: "21600"
       TEMLI_BACKUP_RETENTION: "60"
       TEMLI_ALLOW_PLAINTEXT_BACKUPS: "false"
     volumes:
       - /var/lib/temli/storage:/data
+      - /var/lib/temli/backups:/backups
     networks:
       - storage_internal
     restart: unless-stopped

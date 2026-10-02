@@ -27,6 +27,7 @@ systemctl enable --now docker
 install -d -m 750 /opt/temli
 install -d -m 700 /opt/temli/secrets
 install -d -m 700 /var/lib/temli/storage
+install -d -m 700 /var/lib/temli/backups
 install -d -m 700 /var/lib/temli/replica
 install -d -m 700 /var/lib/temli/scratch
 

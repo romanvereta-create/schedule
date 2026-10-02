@@ -8,6 +8,10 @@ Public ports: `80/tcp`, `443/tcp`, and `443/udp`. The application and storage
 ports are private Docker-network endpoints. The storage network is marked
 `internal`, so the storage container has no outbound internet route.
 
+Live records and encrypted backup archives use separate host directories,
+`/var/lib/temli/storage` and `/var/lib/temli/backups`, to preserve the storage
+service's restore and corruption-safety boundary.
+
 ## Files containing secrets
 
 - `app.env`: central bot token, owner id, Telegram-only proxy, application keys.
