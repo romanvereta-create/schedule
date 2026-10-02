@@ -417,15 +417,18 @@ body {
 @media (max-width: 600px) { .top-notification-preview { display: none; } }
 
 /* Modals */
-#modal-overlay, #add-type-overlay, #move-modal-overlay, #action-menu-overlay, #delete-modal-overlay, #date-picker-overlay, #app-settings-overlay, #receipt-settings-overlay, #help-overlay, #student-card-overlay, #work-center-overlay, #paid-confirm-overlay, #subscription-pay-overlay, #onboarding-overlay, #day-off-warning-overlay {
+#modal-overlay, #add-type-overlay, #move-modal-overlay, #action-menu-overlay, #delete-modal-overlay, #date-picker-overlay, #app-settings-overlay, #receipt-settings-overlay, #help-overlay, #student-card-overlay, #work-center-overlay, #paid-confirm-overlay, #subscription-pay-overlay, #onboarding-overlay, #day-off-warning-overlay, #eligibility-overlay {
     position: fixed; left: 0; right: 0; background: rgba(0, 0, 0, 0.45); z-index: 1000; display: flex; align-items: center; justify-content: center;
 }
-#modal-overlay.hidden, #add-type-overlay.hidden, #move-modal-overlay.hidden, #action-menu-overlay.hidden, #delete-modal-overlay.hidden, #date-picker-overlay.hidden, #app-settings-overlay.hidden, #receipt-settings-overlay.hidden, #help-overlay.hidden, #student-card-overlay.hidden, #work-center-overlay.hidden, #paid-confirm-overlay.hidden, #subscription-pay-overlay.hidden, #onboarding-overlay.hidden, #day-off-warning-overlay.hidden { display: none; }
+#modal-overlay.hidden, #add-type-overlay.hidden, #move-modal-overlay.hidden, #action-menu-overlay.hidden, #delete-modal-overlay.hidden, #date-picker-overlay.hidden, #app-settings-overlay.hidden, #receipt-settings-overlay.hidden, #help-overlay.hidden, #student-card-overlay.hidden, #work-center-overlay.hidden, #paid-confirm-overlay.hidden, #subscription-pay-overlay.hidden, #onboarding-overlay.hidden, #day-off-warning-overlay.hidden, #eligibility-overlay.hidden { display: none; }
 
 .modal-content { background: #ffffff; border-radius: 16px; width: 100%; max-width: 350px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); display: flex; flex-direction: column; max-height: 100%; min-height: 0; overflow-y: auto; }
 .modal-content > * { flex-shrink: 0; min-width: 0; }
 .text-center { text-align: center; }
 .modal-subtitle { font-size: 13px; color: #5f6368; margin-bottom: 10px; }
+.eligibility-modal { max-width: 420px; gap: 10px; }
+.eligibility-confirmation { align-items: flex-start; padding: 10px; border: 1px solid #dadce0; border-radius: 10px; }
+.eligibility-confirmation input { margin-top: 2px; flex: 0 0 auto; }
 .modal-desc { margin: 10px 0 18px 0; font-size: 14px; color: #5f6368; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .modal-header h2 { font-size: 18px; color: #202124; }

@@ -655,6 +655,28 @@
         </div>
     </div>
 
+    <!-- ДОПУСК К ПРОДУКТУ -->
+    <div id="eligibility-overlay" class="hidden" data-i18n-ignore>
+        <div class="modal-content eligibility-modal" role="dialog" aria-modal="true" aria-labelledby="eligibility-title">
+            <h2 id="eligibility-title">Кто может использовать TEMLI</h2>
+            <p id="eligibility-description" class="modal-subtitle">TEMLI сейчас предназначен только для совершеннолетних частных преподавателей.</p>
+            <label class="checkbox-label eligibility-confirmation">
+                <input id="eligibility-adult-tutor" type="checkbox">
+                <span id="eligibility-adult-tutor-label">Мне исполнилось 18 лет, и я работаю как частный преподаватель.</span>
+            </label>
+            <label class="checkbox-label eligibility-confirmation">
+                <input id="eligibility-not-organization" type="checkbox">
+                <span id="eligibility-not-organization-label">Я не создаю аккаунт от имени школы или другой организации.</span>
+            </label>
+            <p id="eligibility-student-note" class="field-hint">Ученики, включая несовершеннолетних, могут получать уведомления через брендированного бота преподавателя. Аккаунт TEMLI ученику не создаётся.</p>
+            <p id="eligibility-error" class="student-bot-invites-status" role="alert"></p>
+            <div class="modal-actions-column">
+                <button id="btn-accept-eligibility" class="primary-btn" type="button" disabled>Продолжить</button>
+                <button id="btn-decline-eligibility" class="secondary-btn" type="button">Закрыть TEMLI</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ПЕРВИЧНАЯ НАСТРОЙКА ПУСТОГО АККАУНТА -->
     <div id="onboarding-overlay" class="hidden">
         <div class="modal-content onboarding-modal">
@@ -937,6 +959,6 @@
         </div>
     </div>
 
-    <script src="startup.js?v=20261002-payment-fix2"></script>
+    <script src="startup.js?v=20261002-eligibility1"></script>
 </body>
 </html>

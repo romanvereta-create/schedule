@@ -54,6 +54,7 @@ class ConsentApiTests(unittest.TestCase):
     def test_api_gate_accept_and_revoke(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, DOC_ENV, clear=False), \
                 patch.object(bot, "ALLOW_UNAUTHENTICATED", False), \
+                patch.object(bot, "ELIGIBILITY_ENFORCEMENT", False), \
                 patch.object(bot, "CONSENT_ENFORCEMENT", True), \
                 patch.object(bot, "REMOTE_STORAGE", None), \
                 patch.object(bot, "BASE_DIR", temp_dir), \
@@ -86,6 +87,7 @@ class ConsentApiTests(unittest.TestCase):
     def test_default_enforcement_off_does_not_change_existing_api(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
                 patch.object(bot, "ALLOW_UNAUTHENTICATED", False), \
+                patch.object(bot, "ELIGIBILITY_ENFORCEMENT", False), \
                 patch.object(bot, "CONSENT_ENFORCEMENT", False), \
                 patch.object(bot, "REMOTE_STORAGE", None), \
                 patch.object(bot, "BASE_DIR", temp_dir), \

@@ -165,6 +165,8 @@ MAX_IMAGE_PIXELS = _bounded_env_int(
     "TEMLI_MAX_IMAGE_PIXELS", 20_000_000, 1_000_000, 40_000_000
 )
 CONSENT_ENFORCEMENT = os.getenv("TEMLI_CONSENT_ENFORCEMENT", "false").strip().lower() == "true"
+ELIGIBILITY_ENFORCEMENT = os.getenv("TEMLI_ELIGIBILITY_ENFORCEMENT", "true").strip().lower() != "false"
+ELIGIBILITY_VERSION = "2026-10-02"
 RECEIPT_ASSETS_DIR = project_path("receipt_assets")
 BOOK_FILE = project_path("book.xlsx")
 FONT_REGULAR = os.path.join(CODE_DIR, "DejaVuSansCondensed.ttf")
@@ -468,6 +470,47 @@ def ensure_teacher_registered(teacher_id, user=None):
         if teacher_id != primary:
             os.makedirs(os.path.join(TENANT_DATA_DIR, _safe_teacher_id(teacher_id)), exist_ok=True)
     return teacher_id
+
+
+def teacher_eligibility_status(teacher_id=None):
+    teacher_id = str(teacher_id or getattr(g, "teacher_id", "") or "").strip()
+    registry = load_tenant_registry()
+    info = registry.get("teachers", {}).get(teacher_id, {})
+    eligibility = info.get("eligibility", {}) if isinstance(info, dict) else {}
+    ready = bool(
+        isinstance(eligibility, dict)
+        and eligibility.get("version") == ELIGIBILITY_VERSION
+        and eligibility.get("adult_private_tutor") is True
+        and eligibility.get("not_school_or_organization") is True
+        and eligibility.get("accepted_at")
+    )
+    return {
+        "ready": ready,
+        "version": ELIGIBILITY_VERSION,
+        "accepted_at": eligibility.get("accepted_at") if ready else None,
+    }
+
+
+def accept_teacher_eligibility(teacher_id, payload):
+    teacher_id = str(teacher_id or "").strip()
+    if not teacher_id or not isinstance(payload, dict):
+        raise ValueError("invalid_eligibility")
+    if payload.get("adult_private_tutor") is not True or payload.get("not_school_or_organization") is not True:
+        raise ValueError("eligibility_not_confirmed")
+    with DATA_LOCK:
+        registry = load_tenant_registry()
+        teachers = registry.setdefault("teachers", {})
+        info = teachers.get(teacher_id, {}) if isinstance(teachers.get(teacher_id), dict) else {"id": teacher_id}
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        info["eligibility"] = {
+            "version": ELIGIBILITY_VERSION,
+            "adult_private_tutor": True,
+            "not_school_or_organization": True,
+            "accepted_at": now,
+        }
+        teachers[teacher_id] = info
+        save_tenant_registry(registry)
+    return teacher_eligibility_status(teacher_id)
 
 
 def registered_teacher_ids(include_legacy=True):
@@ -1524,7 +1567,16 @@ def protect_api():
     ensure_teacher_registered(teacher_id, user or {})
     g.teacher_context_token = TEACHER_CONTEXT.set(teacher_id)
     g.teacher_id = teacher_id
-    consent_paths = {"/api/consent/status", "/api/consent/accept", "/api/consent/revoke"}
+    eligibility_paths = {"/api/eligibility/status", "/api/eligibility/accept"}
+    eligibility = teacher_eligibility_status(teacher_id)
+    if (ELIGIBILITY_ENFORCEMENT and not ALLOW_UNAUTHENTICATED
+            and request.path not in eligibility_paths and not eligibility["ready"]):
+        return jsonify({
+            "status": "error",
+            "code": "eligibility_required",
+            **eligibility,
+        }), 428
+    consent_paths = {"/api/consent/status", "/api/consent/accept", "/api/consent/revoke", *eligibility_paths}
     if CONSENT_ENFORCEMENT and not ALLOW_UNAUTHENTICATED and request.path not in consent_paths:
         try:
             consent = current_consent_status()
@@ -2192,6 +2244,20 @@ def _requested_consent_documents():
         return None
     normalized = list(dict.fromkeys(str(item) for item in requested))
     return normalized if all(item in DOCUMENT_TYPES for item in normalized) else None
+
+
+@flask_app.route("/api/eligibility/status", methods=["GET"])
+def get_eligibility_status():
+    return jsonify({"status": "ok", **teacher_eligibility_status()})
+
+
+@flask_app.route("/api/eligibility/accept", methods=["POST"])
+def accept_eligibility():
+    try:
+        status = accept_teacher_eligibility(getattr(g, "teacher_id", ""), request.get_json(silent=True))
+    except ValueError as error:
+        return jsonify({"status": "error", "code": str(error)}), 400
+    return jsonify({"status": "ok", **status})
 
 
 @flask_app.route("/api/consent/status", methods=["GET"])
@@ -4247,7 +4313,8 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trace_start("loading_settings")
     with teacher_scope(str(u.id)):
         language = load_settings().get("language", "ru")
-    ready_text = "TEMLI is ready." if language == "en" else "TEMLI готов к работе."
+    ready_text = ("TEMLI is ready for adult independent tutors."
+                  if language == "en" else "TEMLI готов к работе для совершеннолетних частных преподавателей.")
     open_text = "Open TEMLI" if language == "en" else "Открыть TEMLI"
     await reply_text_with_retry(
         update.message,

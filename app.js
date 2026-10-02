@@ -492,6 +492,85 @@ async function refreshScheduleOnly({ refreshHelper = true } = {}) {
     }
 }
 
+let eligibilityContinuation = null;
+
+function eligibilityEnglish() {
+    return String(tg?.initDataUnsafe?.user?.language_code || '').toLowerCase().startsWith('en');
+}
+
+function renderEligibilityGate() {
+    const english = eligibilityEnglish();
+    const values = english ? {
+        title: 'Who can use TEMLI',
+        description: 'TEMLI is currently available only to adult independent tutors.',
+        adult: 'I am 18 or older and I work as an independent private tutor.',
+        organization: 'I am not creating this account for a school or another organization.',
+        student: 'Students, including minors, may receive lesson notifications through the tutor’s branded bot. This does not create a TEMLI account for the student.',
+        accept: 'Continue', close: 'Close TEMLI'
+    } : {
+        title: 'Кто может использовать TEMLI',
+        description: 'TEMLI сейчас предназначен только для совершеннолетних частных преподавателей.',
+        adult: 'Мне исполнилось 18 лет, и я работаю как частный преподаватель.',
+        organization: 'Я не создаю аккаунт от имени школы или другой организации.',
+        student: 'Ученики, включая несовершеннолетних, могут получать уведомления через брендированного бота преподавателя. Аккаунт TEMLI ученику не создаётся.',
+        accept: 'Продолжить', close: 'Закрыть TEMLI'
+    };
+    document.getElementById('eligibility-title').textContent = values.title;
+    document.getElementById('eligibility-description').textContent = values.description;
+    document.getElementById('eligibility-adult-tutor-label').textContent = values.adult;
+    document.getElementById('eligibility-not-organization-label').textContent = values.organization;
+    document.getElementById('eligibility-student-note').textContent = values.student;
+    document.getElementById('btn-accept-eligibility').textContent = values.accept;
+    document.getElementById('btn-decline-eligibility').textContent = values.close;
+}
+
+function updateEligibilityButton() {
+    document.getElementById('btn-accept-eligibility').disabled = !(
+        document.getElementById('eligibility-adult-tutor').checked
+        && document.getElementById('eligibility-not-organization').checked
+    );
+}
+
+async function ensureTeacherEligibility() {
+    const response = await apiFetch('/eligibility/status', { method: 'GET', quiet: true });
+    const result = await response.json();
+    if (response.ok && result.status === 'ok' && result.ready === true) return true;
+    renderEligibilityGate();
+    document.getElementById('eligibility-overlay').classList.remove('hidden');
+    return new Promise(resolve => { eligibilityContinuation = resolve; });
+}
+
+for (const id of ['eligibility-adult-tutor', 'eligibility-not-organization']) {
+    document.getElementById(id).addEventListener('change', updateEligibilityButton);
+}
+document.getElementById('btn-decline-eligibility').onclick = () => {
+    try { tg.close(); } catch (_) {}
+};
+document.getElementById('btn-accept-eligibility').onclick = async () => {
+    const button = document.getElementById('btn-accept-eligibility');
+    if (button.disabled) return;
+    button.disabled = true;
+    document.getElementById('eligibility-error').textContent = '';
+    try {
+        const response = await apiFetch('/eligibility/accept', {
+            method: 'POST',
+            quiet: true,
+            body: JSON.stringify({ adult_private_tutor: true, not_school_or_organization: true })
+        });
+        const result = await response.json();
+        if (!response.ok || result.status !== 'ok' || result.ready !== true) throw new Error();
+        document.getElementById('eligibility-overlay').classList.add('hidden');
+        const continuation = eligibilityContinuation;
+        eligibilityContinuation = null;
+        continuation?.(true);
+    } catch (_) {
+        document.getElementById('eligibility-error').textContent = eligibilityEnglish()
+            ? 'Could not save the confirmation. Check your connection and try again.'
+            : 'Не удалось сохранить подтверждение. Проверьте соединение и повторите.';
+        updateEligibilityButton();
+    }
+};
+
 function applyReturnedLesson(date, lessonId, updatedLesson) {
     if (!updatedLesson || !date || !lessonId) return false;
     const day = state.schedule?.[date];
@@ -4034,7 +4113,18 @@ if (window.ResizeObserver) {
     if (calendarGrid) calendarHeaderObserver.observe(calendarGrid);
 }
 requestAnimationFrame(syncCalendarHeaderScrollbar);
-fetchData();
+async function initializeApplication() {
+    try {
+        await ensureTeacherEligibility();
+        await fetchData();
+    } catch (error) {
+        console.error('Ошибка проверки доступа:', error);
+        if (!networkFailure) reportNetworkFailure(error.networkCode || 'invalid_response', '/eligibility/status');
+        renderNetworkStatus();
+    }
+}
+
+initializeApplication();
 
 // v30.7: единый раздел учеников и оплата произвольной суммой
 function renderStudentsList(filter = '') {
