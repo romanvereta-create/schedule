@@ -30,9 +30,11 @@ Local `backups` and `replica` are not an offsite copy because they reside on the
 
 ## Legal launch gate
 
+The current VDS is explicitly not approved by Selectel for 152-FZ and remains a test-only environment. Real-user production requires migration to Selectel Cloud Servers in Russia.
+
 Before the first real teacher, student or parent:
 
-- Selectel's processing instruction is signed and its applicability to VDS is confirmed;
+- TEMLI is migrated from VDS to Selectel Cloud Servers in Russia and Selectel's processing instruction is signed;
 - the Roskomnadzor operator notification is filed;
 - Telegram cross-border processing is cleared or disabled for real data;
 - privacy policy, terms, consents and teacher processing instruction are approved and published;
