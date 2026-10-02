@@ -11,6 +11,7 @@ services:
     environment:
       PORT: "8080"
       TEMLI_DATA_DIR: /data
+      TEMLI_BACKUP_DIR: /data/backups
       TEMLI_STORAGE_INITIALIZE_EMPTY: "true"
       TEMLI_BACKUP_INTERVAL_SECONDS: "21600"
       TEMLI_BACKUP_RETENTION: "60"
