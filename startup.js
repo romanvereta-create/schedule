@@ -12,12 +12,14 @@
     const releaseLabel = document.getElementById('startup-release');
     let starting = false;
     let appScriptsStarted = false;
+    const startupLanguage = localStorage.getItem('temli-language') === 'ru' ? 'ru' : 'en';
+    const startupText = (ru, en) => startupLanguage === 'ru' ? ru : en;
 
     function showRelease(release) {
         const safeRelease = String(release || '').trim();
         if (!safeRelease) return;
         window.TEMLI_RELEASE_ID = safeRelease;
-        if (releaseLabel) releaseLabel.textContent = `Релиз: ${safeRelease}`;
+        if (releaseLabel) releaseLabel.textContent = `${startupText('Релиз', 'Release')}: ${safeRelease}`;
         const settingsVersion = document.getElementById('settings-build-version');
         if (settingsVersion) settingsVersion.textContent = `TEMLI ${window.TEMLI_I18N?.VERSION || '—'} · ${safeRelease}`;
     }
@@ -105,7 +107,7 @@
         if (appScriptsStarted) { window.location.reload(); return; }
         starting = true;
         retry.disabled = true;
-        showStatus('TEMLI', 'Загрузка приложения…');
+        showStatus('TEMLI', startupText('Загрузка приложения…', 'Loading your workspace…'));
         // Release diagnostics must never delay opening the application.
         void loadRelease();
 
@@ -114,8 +116,11 @@
         } catch (error) {
             console.warn('Не удалось загрузить Telegram WebApp SDK:', error);
             showStatus(
-                'Не удалось загрузить TEMLI',
-                'Не удалось загрузить компоненты Telegram. Проверьте соединение или откройте приложение через другую сеть.',
+                startupText('Не удалось загрузить TEMLI', 'TEMLI could not start'),
+                startupText(
+                    'Не удалось загрузить компоненты Telegram. Проверьте соединение или откройте приложение через другую сеть.',
+                    'Telegram components could not be loaded. Check your connection or try another network.'
+                ),
                 true
             );
             starting = false;
@@ -125,8 +130,11 @@
         const initData = String(window.Telegram.WebApp.initData || '');
         if (!initData) {
             showStatus(
-                'Откройте TEMLI через Telegram',
-                'Для безопасного доступа к расписанию откройте приложение кнопкой в Telegram-боте.'
+                startupText('Откройте TEMLI через Telegram', 'Open TEMLI from Telegram'),
+                startupText(
+                    'Для безопасного доступа к расписанию откройте приложение кнопкой в Telegram-боте.',
+                    'For secure access, open the workspace from the button in the TEMLI bot.'
+                )
             );
             starting = false;
             return;
@@ -145,8 +153,8 @@
         } catch (error) {
             console.error('Не удалось загрузить TEMLI:', error);
             showStatus(
-                'Не удалось загрузить TEMLI',
-                'Обновите страницу или повторите позже.',
+                startupText('Не удалось загрузить TEMLI', 'TEMLI could not start'),
+                startupText('Обновите страницу или повторите позже.', 'Refresh the page or try again later.'),
                 true
             );
         } finally {

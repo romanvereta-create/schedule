@@ -60,7 +60,7 @@ const state = {
     isMoving: false,
     pendingMove: null,
     editingExisting: false,
-    settings: { default_reminders_enabled: true, default_send_receipts: true, default_send_receipt_copy: true, zoom_link: '', work_start: '06:00', work_end: '00:00', days_off: [], language: 'ru', currency: 'RUB' },
+    settings: { default_reminders_enabled: true, default_send_receipts: true, default_send_receipt_copy: true, zoom_link: '', work_start: '06:00', work_end: '00:00', days_off: [], language: 'en', currency: 'USD' },
     datePickerMonth: new Date(),
     workCenter: null,
     subscriptionStudentId: '',
@@ -90,8 +90,8 @@ function dateKey(date) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function uiLocale() { return window.TEMLI_I18N?.locale() || 'ru-RU'; }
-function currencySymbol() { return window.TEMLI_I18N?.currencySymbol() || '₽'; }
+function uiLocale() { return window.TEMLI_I18N?.locale() || 'en-US'; }
+function currencySymbol() { return window.TEMLI_I18N?.currencySymbol() || '$'; }
 function localizeText(value) { return window.TEMLI_I18N?.translated(value) || value; }
 function shortDateRu(value) {
     const source = String(value || '').trim();
@@ -432,8 +432,8 @@ async function loadSettings() {
         const data = await response.json();
         if (data.status === 'ok') {
             state.settings = data.settings || state.settings;
-            await window.TEMLI_I18N?.setLanguage(state.settings.language || 'ru');
-            window.TEMLI_I18N?.setCurrency(state.settings.currency || 'RUB');
+            await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en');
+            window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD');
             state.onboardingNeeded = data.onboarding_needed === true;
             updateVisibleHoursFromSettingsAndLessons();
             if (!initialDataReady) autoFitWeekPending = true;
@@ -495,7 +495,7 @@ async function refreshScheduleOnly({ refreshHelper = true } = {}) {
 let eligibilityContinuation = null;
 
 function eligibilityEnglish() {
-    return String(tg?.initDataUnsafe?.user?.language_code || '').toLowerCase().startsWith('en');
+    return (window.TEMLI_I18N?.language?.() || 'en') === 'en';
 }
 
 function renderEligibilityGate() {
@@ -616,8 +616,8 @@ async function loadBootstrap({ applySettings = true } = {}) {
     fillStudentsDropdown();
     if (applySettings) {
         state.settings = data.settings || state.settings;
-        await window.TEMLI_I18N?.setLanguage(state.settings.language || 'ru');
-        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'RUB');
+        await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en');
+        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD');
         state.onboardingNeeded = data.onboarding_needed === true;
         updateVisibleHoursFromSettingsAndLessons();
         if (!initialDataReady) autoFitWeekPending = true;
@@ -2352,7 +2352,7 @@ document.getElementById('btn-action-subscription').onclick = () => {
 
 
 function subscriptionCountWord(count) {
-    if ((state.settings.language || 'ru') === 'en') return count === 1 ? 'lesson' : 'lessons';
+    if ((state.settings.language || 'en') === 'en') return count === 1 ? 'lesson' : 'lessons';
     const mod100 = count % 100;
     const mod10 = count % 10;
     if (mod100 >= 11 && mod100 <= 14) return 'занятий';
@@ -2839,6 +2839,53 @@ btnExportWeekPdf.onclick = () => runExportButton(btnExportWeekPdf, 'Отправ
     });
 });
 
+const btnExportAccountData = document.getElementById('btn-export-account-data');
+btnExportAccountData.onclick = () => runExportButton(
+    btnExportAccountData,
+    botText('Готовлю архив данных', 'Preparing your data archive'),
+    async () => downloadApiFile(
+        '/export_account_data',
+        { method: 'GET' },
+        `temli-account-export-${dateKey(new Date())}.zip`
+    )
+);
+
+document.getElementById('btn-request-account-deletion').onclick = async () => {
+    const phrase = 'DELETE TEMLI';
+    const answer = window.prompt(botText(
+        `Это создаст запрос на безвозвратное удаление аккаунта. Введите ${phrase}, чтобы продолжить.`,
+        `This creates a request to permanently delete your account. Type ${phrase} to continue.`
+    ));
+    if (answer === null) return;
+    const status = document.getElementById('account-deletion-status');
+    if (answer.trim() !== phrase) {
+        status.textContent = botText('Фраза подтверждения не совпала.', 'The confirmation phrase did not match.');
+        return;
+    }
+    const button = document.getElementById('btn-request-account-deletion');
+    button.disabled = true;
+    status.textContent = botText('Отправляю запрос…', 'Submitting your request…');
+    try {
+        const response = await apiFetch('/request_account_deletion', {
+            method: 'POST',
+            body: JSON.stringify({ confirmation: phrase })
+        });
+        const result = await response.json();
+        if (!response.ok || result.status !== 'ok') throw new Error(result.code || 'request_failed');
+        status.textContent = botText(
+            `Запрос принят. Номер: ${result.reference}.`,
+            `Request received. Reference: ${result.reference}.`
+        );
+    } catch (_) {
+        status.textContent = botText(
+            'Не удалось отправить запрос. Обратитесь в поддержку.',
+            'Could not submit the request. Please contact support.'
+        );
+    } finally {
+        button.disabled = false;
+    }
+};
+
 // Общие настройки и данные для чека
 const receiptSettingFields = [
     'company_name', 'inn', 'ogrnip', 'address', 'phone', 'service_name', 'tax_system',
@@ -2858,9 +2905,9 @@ function syncLanguageSegment(language = document.getElementById('interface-langu
 }
 
 function fillAppSettingsForm() {
-    document.getElementById('interface-language').value = state.settings.language || 'ru';
-    syncLanguageSegment(state.settings.language || 'ru');
-    document.getElementById('interface-currency').value = state.settings.currency || 'RUB';
+    document.getElementById('interface-language').value = state.settings.language || 'en';
+    syncLanguageSegment(state.settings.language || 'en');
+    document.getElementById('interface-currency').value = state.settings.currency || 'USD';
     document.getElementById('default-reminders-enabled').checked = state.settings.default_student_reminders === true;
     document.getElementById('default-parent-end').checked = state.settings.parent_lesson_end === true;
     document.getElementById('teacher-block-reminders').checked = state.settings.teacher_block_reminders === true;
@@ -3160,8 +3207,8 @@ document.getElementById('btn-app-settings').onclick = () => {
 };
 async function closeAppSettings() {
     document.getElementById('personal-bot-token').value = '';
-    await window.TEMLI_I18N?.setLanguage(state.settings.language || 'ru', { persist: false });
-    window.TEMLI_I18N?.setCurrency(state.settings.currency || 'RUB', { persist: false });
+    await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en', { persist: false });
+    window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD', { persist: false });
     document.getElementById('app-settings-overlay').classList.add('hidden');
 }
 document.getElementById('btn-close-app-settings').onclick = closeAppSettings;
@@ -3194,8 +3241,8 @@ document.getElementById('btn-save-app-settings').onclick = async () => {
     button.disabled = true;
     try {
         const settings = {
-            language: document.getElementById('interface-language').value || 'ru',
-            currency: document.getElementById('interface-currency').value || 'RUB',
+            language: document.getElementById('interface-language').value || 'en',
+            currency: document.getElementById('interface-currency').value || 'USD',
             default_student_reminders: document.getElementById('default-reminders-enabled').checked,
             parent_lesson_end: document.getElementById('default-parent-end').checked,
             teacher_block_reminders: document.getElementById('teacher-block-reminders').checked,
@@ -3218,8 +3265,8 @@ document.getElementById('btn-save-app-settings').onclick = async () => {
         if (result.status !== 'ok') return alert(result.message || 'Ошибка сохранения настроек');
         state.settings = result.settings || { ...state.settings, ...settings };
         window.dispatchEvent(new CustomEvent('temli-saved', { detail: { overlay: 'app-settings-overlay' } }));
-        await window.TEMLI_I18N?.setLanguage(state.settings.language || 'ru');
-        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'RUB');
+        await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en');
+        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD');
         updateVisibleHoursFromSettingsAndLessons();
         autoFitWeekPending = true;
         renderCalendar();

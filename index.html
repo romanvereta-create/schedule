@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -792,20 +792,20 @@
                         <label for="interface-language">Язык интерфейса</label>
                         <div id="interface-language-segment" class="language-segment" role="radiogroup" aria-label="Язык интерфейса">
                             <span class="language-segment-glow" aria-hidden="true"></span>
-                            <button class="language-segment-option" type="button" data-language="ru" role="radio" aria-checked="true"><strong>RU</strong><small>Русский</small></button>
-                            <button class="language-segment-option" type="button" data-language="en" role="radio" aria-checked="false"><strong>EN</strong><small>English</small></button>
+                            <button class="language-segment-option" type="button" data-language="en" role="radio" aria-checked="true"><strong>EN</strong><small>English</small></button>
+                            <button class="language-segment-option" type="button" data-language="ru" role="radio" aria-checked="false"><strong>RU</strong><small>Русский</small></button>
                         </div>
                         <select id="interface-language" class="language-native-select" tabindex="-1" aria-hidden="true">
-                            <option value="ru">Русский</option>
                             <option value="en">English</option>
+                            <option value="ru">Русский</option>
                         </select>
                     </div>
                     <div class="form-group compact-setting-field">
                         <label for="interface-currency">Валюта</label>
                         <select id="interface-currency">
-                            <option value="RUB">RUB — ₽</option>
                             <option value="USD">USD — $</option>
                             <option value="EUR">EUR — €</option>
+                            <option value="RUB">RUB — ₽</option>
                             <option value="CNY">CNY — ¥</option>
                             <option value="TRY">TRY — ₺</option>
                         </select>
@@ -868,6 +868,18 @@
                 <button id="btn-export-week-pdf" class="settings-link-row export-link-row" type="button">
                     <span class="settings-link-main"><strong><svg class="thread-icon" aria-hidden="true"><use href="#ti-pdf"></use></svg>Расписание недели</strong><small>Прислать PDF в Telegram</small></span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
                 </button>
+                <button id="btn-export-account-data" class="settings-link-row export-link-row" type="button">
+                    <span class="settings-link-main"><strong>Скачать все данные аккаунта</strong><small>ZIP-архив с настройками, учениками, расписанием и оплатами</small></span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg>
+                </button>
+                <div class="settings-mini-title">Конфиденциальность и аккаунт</div>
+                <a class="settings-link-row" href="/privacy" target="_blank" rel="noopener"><span>Уведомление о конфиденциальности</span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg></a>
+                <a class="settings-link-row" href="/terms" target="_blank" rel="noopener"><span>Условия использования</span><svg class="thread-icon row-chevron" aria-hidden="true"><use href="#ti-chevron-right"></use></svg></a>
+                <details class="settings-details student-delete-section">
+                    <summary>Удаление аккаунта</summary>
+                    <small class="field-hint">Запрос требует подтверждения. Сначала скачайте архив своих данных.</small>
+                    <button id="btn-request-account-deletion" class="danger-btn" type="button">Запросить удаление аккаунта</button>
+                    <small id="account-deletion-status" class="field-hint" role="status"></small>
+                </details>
             </div>
             <div class="modal-actions">
                 <button id="btn-save-app-settings" class="primary-btn" type="button">Сохранить</button>

@@ -1,8 +1,8 @@
 (() => {
     const VERSION = '1.0.0';
     const LANGUAGES = {
-        ru: { label: 'Русский', locale: 'ru-RU', currency: 'RUB' },
         en: { label: 'English', locale: 'en-US', currency: 'USD' },
+        ru: { label: 'Русский', locale: 'ru-RU', currency: 'RUB' },
     };
     const CURRENCIES = {
         RUB: { symbol: '₽', label: 'RUB — ₽' },
@@ -81,18 +81,82 @@
         ,'выбор даты, стрелки назад/вперёд и режимы «День» / «Неделя». В режиме дня стрелки листают дни, в режиме недели — недели.': 'date picker, previous/next buttons, and Day / Week modes. In Day mode the arrows move by day; in Week mode they move by week.'
         ,', выбор даты, стрелки назад/вперёд и режимы «День» / «Неделя». В режиме дня стрелки листают дни, в режиме недели — недели.': ', date picker, previous/next buttons, and Day / Week modes. In Day mode the arrows move by day; in Week mode they move by week.'
         ,'сначала закрывает самые старые неоплаченные занятия, включая участие в группах, и только затем будущие.': 'covers the oldest unpaid lessons first, including group participation, and only then future lessons.'
+        ,'ИНН': 'Tax ID'
+        ,'ИНН:': 'Tax ID:'
+        ,'ОГРНИП': 'Registration number'
+        ,'БИК': 'Bank code'
+        ,'Корр. счёт': 'Correspondent account'
+        ,'Расчётный счёт': 'Account number'
+        ,'ПСН / УСН': 'Tax system'
+        ,'Цена': 'Price'
+        ,'Дата': 'Date'
+        ,'Время': 'Time'
+        ,'Телефон': 'Phone'
+        ,'Банк': 'Bank'
+        ,'Сайт': 'Website'
+        ,'Цвет': 'Color'
+        ,'Статус': 'Status'
+        ,'Клиент': 'Client'
+        ,'Услуга': 'Service'
+        ,'Наименование': 'Business or tutor name'
+        ,'СУММА БЕЗ НДС': 'TOTAL (VAT EXEMPT)'
+        ,'Загрузка…': 'Loading…'
+        ,'Файл не выбран.': 'No file selected.'
+        ,'Ученик не найден': 'Student not found'
+        ,'Ученик не найден.': 'Student not found.'
+        ,'Ученики группы': 'Group members'
+        ,'Архив учеников': 'Archived students'
+        ,'Контакт ученика': 'Student contact'
+        ,'Контакт родителя': 'Parent contact'
+        ,'Занятие участника': 'Participant lesson'
+        ,'Занятие в выходной': 'Lesson on a day off'
+        ,'Помощник недоступен': 'Assistant unavailable'
+        ,'Помощник недоступен:': 'Assistant unavailable:'
+        ,'Ошибка загрузки учеников': 'Could not load students'
+        ,'Ошибка обновления учеников': 'Could not refresh students'
+        ,'Ошибка обновления учеников:': 'Could not refresh students:'
+        ,'Настройки пока недоступны': 'Settings are temporarily unavailable'
+        ,'Настройки пока недоступны:': 'Settings are temporarily unavailable:'
+        ,'Чек отправлен родителю.': 'Receipt sent to the parent.'
+        ,'Копия чека отправлена вам.': 'A receipt copy was sent to you.'
+        ,'Копию вам отправить не удалось:': 'Could not send your receipt copy:'
+        ,'Родителю чек отправить не удалось:': 'Could not send the receipt to the parent:'
+        ,'Родителям чеки не отправлялись.': 'No receipts were sent to parents.'
+        ,'Некорректная стоимость урока.': 'Enter a valid lesson price.'
+        ,'Некорректная дата или время занятия.': 'Enter a valid lesson date and time.'
+        ,'Время окончания должно быть позже начала.': 'End time must be later than start time.'
+        ,'Недействительные данные Telegram WebApp.': 'Telegram could not verify this Web App session.'
+        ,'Полный экран недоступен в этом клиенте Telegram.': 'Full-screen mode is unavailable in this Telegram app.'
+        ,'Книга учёта отправлена вам в Telegram.': 'Your accounting workbook was sent in Telegram.'
+        ,'PDF расписания отправлен вам в Telegram.': 'Your weekly schedule PDF was sent in Telegram.'
+        ,'Сумма должна делиться на стоимость урока': 'The amount must be a multiple of the lesson price'
+        ,'Занятия или оплаты изменились. Откройте оплату заново, чтобы обновить сумму.': 'Lessons or payments changed. Reopen the payment screen to refresh the amount.'
+        ,'Не удалось получить результат оплаты. Перед повторной оплатой проверьте историю ученика.': 'The payment result was not received. Check the student’s payment history before trying again.'
+        ,'Сумма распределится начиная с самых старых неоплаченных занятий, включая долги.': 'The amount will be applied to the oldest unpaid lessons first, including outstanding balances.'
+        ,'Варианты оплачивают ближайшие будущие занятия с указанной ценой. Прошлые долги не включены.': 'These options cover the next future lessons at the selected price. Existing balances are not included.'
+        ,'Скачать все данные аккаунта': 'Download all account data'
+        ,'ZIP-архив с настройками, учениками, расписанием и оплатами': 'A ZIP archive with settings, students, schedule, and payments'
+        ,'Конфиденциальность и аккаунт': 'Privacy and account'
+        ,'Уведомление о конфиденциальности': 'Privacy notice'
+        ,'Условия использования': 'Terms of Service'
+        ,'Удаление аккаунта': 'Account deletion'
+        ,'Запрос требует подтверждения. Сначала скачайте архив своих данных.': 'Confirmation is required. Download your data archive first.'
+        ,'Запросить удаление аккаунта': 'Request account deletion'
+        ,'Напоминания преподавателю': 'Tutor reminders'
+        ,'Напоминать перед первым занятием рабочего блока': 'Remind me before the first lesson in a teaching block'
+        ,'За 30 минут. Следующее напоминание — только после перерыва больше 60 минут.': '30 minutes before. Another reminder is sent only after a break longer than 60 minutes.'
     } };
     const dictionaryEntries = { ru: [] };
     const loading = {};
     const textState = new WeakMap();
     const attrState = new WeakMap();
-    let language = localStorage.getItem('temli-language') || 'ru';
-    let currency = localStorage.getItem('temli-currency') || 'RUB';
-    if (!LANGUAGES[language]) language = 'ru';
-    if (!CURRENCIES[currency]) currency = 'RUB';
+    let language = localStorage.getItem('temli-language') || 'en';
+    let currency = localStorage.getItem('temli-currency') || 'USD';
+    if (!LANGUAGES[language]) language = 'en';
+    if (!CURRENCIES[currency]) currency = 'USD';
 
     function currencySymbol() {
-        return CURRENCIES[currency]?.symbol || '₽';
+        return CURRENCIES[currency]?.symbol || '$';
     }
 
     function replaceCurrency(value) {
@@ -175,8 +239,10 @@
 
     function register(code, dictionary) {
         if (LANGUAGES[code] && dictionary && typeof dictionary === 'object') {
-            dictionaries[code] = { ...(supplementalDictionaries[code] || {}), ...dictionary };
-            dictionaryEntries[code] = Object.entries(dictionary)
+            // Generated locale files provide broad coverage. Curated entries
+            // intentionally win when a literal translation sounds unnatural.
+            dictionaries[code] = { ...dictionary, ...(supplementalDictionaries[code] || {}) };
+            dictionaryEntries[code] = Object.entries(dictionaries[code])
                 .filter(([from]) => from.length >= 3)
                 .sort((a, b) => b[0].length - a[0].length);
         }
@@ -203,7 +269,7 @@
     }
 
     async function setLanguage(code, { persist = true } = {}) {
-        const safeCode = LANGUAGES[code] ? code : 'ru';
+        const safeCode = LANGUAGES[code] ? code : 'en';
         await ensureLanguage(safeCode);
         language = safeCode;
         if (persist) localStorage.setItem('temli-language', safeCode);
@@ -213,7 +279,7 @@
     }
 
     function setCurrency(code, { persist = true } = {}) {
-        currency = CURRENCIES[code] ? code : 'RUB';
+        currency = CURRENCIES[code] ? code : 'USD';
         if (persist) localStorage.setItem('temli-currency', currency);
         document.documentElement.style.setProperty('--currency-symbol', `"${currencySymbol()}"`);
         apply();
@@ -221,7 +287,7 @@
     }
 
     function formatNumber(value, options = {}) {
-        return Number(value || 0).toLocaleString(LANGUAGES[language]?.locale || 'ru-RU', options);
+        return Number(value || 0).toLocaleString(LANGUAGES[language]?.locale || 'en-US', options);
     }
 
     const nativeAlert = window.alert.bind(window);
@@ -264,8 +330,8 @@
         VERSION, LANGUAGES, CURRENCIES, register, apply, translated,
         setLanguage, setCurrency, language: () => language,
         currency: () => currency, currencySymbol,
-        locale: () => LANGUAGES[language]?.locale || 'ru-RU',
-        recommendedCurrency: code => LANGUAGES[code]?.currency || 'RUB',
+        locale: () => LANGUAGES[language]?.locale || 'en-US',
+        recommendedCurrency: code => LANGUAGES[code]?.currency || 'USD',
         formatNumber
     };
 })();

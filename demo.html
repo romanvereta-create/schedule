@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>TEMLI demo — Sample data only</title>
+    <link rel="stylesheet" href="/demo.css">
+</head>
+<body>
+    <header class="demo-topbar">
+        <a class="demo-brand" href="/"><span>T</span>TEMLI</a>
+        <div class="demo-label">Interactive demo · sample data</div>
+        <div class="demo-actions"><a href="/">About</a><a class="demo-cta" href="/open">Open TEMLI</a></div>
+    </header>
+    <main class="demo-shell">
+        <aside class="demo-sidebar">
+            <div class="demo-profile"><div class="demo-avatar">A</div><div><strong>Alex Morgan</strong><small>Independent tutor</small></div></div>
+            <nav aria-label="Demo views">
+                <button class="demo-nav active" data-view="calendar"><span>▦</span>Calendar</button>
+                <button class="demo-nav" data-view="students"><span>◎</span>Students</button>
+                <button class="demo-nav" data-view="payments"><span>✓</span>Payments</button>
+            </nav>
+            <div class="demo-side-note"><strong>View-only demo</strong><p>Nothing you do here is saved. This page never connects to a TEMLI account.</p></div>
+        </aside>
+        <section class="demo-workspace">
+            <div class="demo-mobile-head"><div class="demo-profile"><div class="demo-avatar">A</div><strong>Alex Morgan</strong></div><span>Sample data</span></div>
+            <section class="demo-view active" data-panel="calendar">
+                <div class="demo-heading"><div><p>Monday, 5 October</p><h1>Your teaching week</h1></div><div class="demo-heading-actions"><button>Today</button><button class="primary">＋ Add lesson</button></div></div>
+                <div class="metric-row"><article><small>Lessons this week</small><strong>14</strong><em>12 confirmed</em></article><article><small>Expected revenue</small><strong>$560</strong><em>75% received</em></article><article><small>Next lesson</small><strong>10:00</strong><em>Maya Chen</em></article></div>
+                <div class="calendar-card">
+                    <div class="calendar-toolbar"><button>‹</button><strong>5–9 October</strong><button>›</button><span></span><button class="selected">Week</button><button>Day</button></div>
+                    <div class="calendar-grid">
+                        <div class="corner"></div><div class="weekday"><b>MON</b><span>5</span></div><div class="weekday"><b>TUE</b><span>6</span></div><div class="weekday"><b>WED</b><span>7</span></div><div class="weekday"><b>THU</b><span>8</span></div><div class="weekday"><b>FRI</b><span>9</span></div>
+                        <div class="hour">09:00</div><div></div><div></div><div class="event blue">Noah<br><small>09:00 · 60 min</small></div><div></div><div></div>
+                        <div class="hour">10:00</div><div class="event blue">Maya Chen<br><small>10:00 · 60 min</small></div><div></div><div></div><div class="event green">Leo Martin <b>✓</b><br><small>10:00 · 60 min</small></div><div></div>
+                        <div class="hour">11:00</div><div></div><div class="event green">Sofia Reed <b>✓</b><br><small>11:00 · 60 min</small></div><div class="event orange">Group A<br><small>11:00 · 90 min</small></div><div></div><div></div>
+                        <div class="hour">12:00</div><div></div><div></div><div></div><div></div><div class="event blue">Emma Davis<br><small>12:00 · 60 min</small></div>
+                        <div class="hour">13:00</div><div class="event muted">Lesson planning<br><small>13:00 · 60 min</small></div><div></div><div></div><div class="event blue">Liam Wilson<br><small>13:00 · 60 min</small></div><div></div>
+                        <div class="hour">14:00</div><div></div><div class="event blue">Oliver Stone<br><small>14:00 · 60 min</small></div><div></div><div></div><div class="event green">Mia Taylor <b>✓</b><br><small>14:00 · 60 min</small></div>
+                    </div>
+                </div>
+            </section>
+            <section class="demo-view" data-panel="students">
+                <div class="demo-heading"><div><p>Student workspace</p><h1>Everything about a student</h1></div><button class="primary">＋ Add student</button></div>
+                <div class="student-layout">
+                    <div class="student-list-card"><div class="search">⌕ Search students</div><button class="student-row active"><span class="student-dot blue-bg">MC</span><span><strong>Maya Chen</strong><small>Next: today at 10:00</small></span><b>$80 due</b></button><button class="student-row"><span class="student-dot green-bg">SR</span><span><strong>Sofia Reed</strong><small>Next: Tuesday at 11:00</small></span><b>Paid</b></button><button class="student-row"><span class="student-dot orange-bg">LM</span><span><strong>Leo Martin</strong><small>Next: Thursday at 10:00</small></span><b>Paid</b></button><button class="student-row"><span class="student-dot violet-bg">OS</span><span><strong>Oliver Stone</strong><small>Next: Tuesday at 14:00</small></span><b>$40 due</b></button></div>
+                    <article class="student-profile-card"><div class="student-title"><span class="student-dot large blue-bg">MC</span><div><h2>Maya Chen</h2><p>Active student · English B2</p></div><button>•••</button></div><div class="profile-stats"><div><small>Lessons</small><strong>18</strong></div><div><small>Paid</small><strong>16</strong></div><div><small>Balance</small><strong>$80</strong></div></div><div class="profile-section"><small>LESSON DETAILS</small><p><b>Rate</b><span>$40 / lesson</span></p><p><b>Board</b><span class="link">Open lesson board ↗</span></p><p><b>Telegram</b><span>@maya_example</span></p></div><div class="profile-section"><small>NOTES</small><p class="note">Preparing for an English proficiency exam. Focus on speaking confidence and essay structure.</p></div><div class="profile-section"><small>NOTIFICATIONS</small><p><b>Lesson reminders</b><span class="toggle">On</span></p><p><b>Branded bot</b><span class="connected">Connected</span></p></div></article>
+                </div>
+            </section>
+            <section class="demo-view" data-panel="payments">
+                <div class="demo-heading"><div><p>Payment overview</p><h1>Know what has been paid</h1></div><button class="primary">Export data</button></div>
+                <div class="metric-row"><article><small>Received this month</small><strong>$1,680</strong><em class="positive">↑ 12% from September</em></article><article><small>Outstanding</small><strong>$240</strong><em>Across 4 lessons</em></article><article><small>Paid lessons</small><strong>42</strong><em>of 48 completed</em></article></div>
+                <div class="payments-card"><div class="payments-head"><div><strong>Recent activity</strong><small>October 2026</small></div><button>All students⌄</button></div><div class="payment-row"><span class="payment-status paid">✓</span><div><strong>Sofia Reed</strong><small>Individual lesson · 6 Oct, 11:00</small></div><b>$40.00</b><em>Paid</em></div><div class="payment-row"><span class="payment-status paid">✓</span><div><strong>Leo Martin</strong><small>Individual lesson · 8 Oct, 10:00</small></div><b>$40.00</b><em>Paid</em></div><div class="payment-row"><span class="payment-status pending">!</span><div><strong>Maya Chen</strong><small>2 individual lessons</small></div><b>$80.00</b><em class="due">Due</em></div><div class="payment-row"><span class="payment-status paid">✓</span><div><strong>Group A</strong><small>Group lesson · 7 Oct, 11:00</small></div><b>$75.00</b><em>Paid</em></div><div class="payment-row"><span class="payment-status pending">!</span><div><strong>Oliver Stone</strong><small>Individual lesson · 6 Oct, 14:00</small></div><b>$40.00</b><em class="due">Due</em></div></div>
+            </section>
+        </section>
+    </main>
+    <nav class="demo-mobile-nav" aria-label="Demo views"><button class="demo-nav active" data-view="calendar">▦<small>Calendar</small></button><button class="demo-nav" data-view="students">◎<small>Students</small></button><button class="demo-nav" data-view="payments">✓<small>Payments</small></button></nav>
+    <script src="/demo.js"></script>
+</body>
+</html>

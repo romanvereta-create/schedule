@@ -41,6 +41,7 @@ import threading
 import time
 import shutil
 import uuid
+import zipfile
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -51,9 +52,9 @@ else:
     import fcntl
 
 import pytz
-from flask import Flask, jsonify, request, send_file, send_from_directory, g
+from flask import Flask, jsonify, redirect, request, send_file, send_from_directory, g
 from flask_cors import CORS
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 from fpdf import FPDF
@@ -125,6 +126,7 @@ def project_path(*parts):
 
 
 TOKEN = os.getenv("SCHEDULE_BOT_TOKEN")
+BOT_USERNAME = os.getenv("SCHEDULE_BOT_USERNAME", "").strip().lstrip("@")
 DATA_FILE = project_path("schedule.json")
 STUDENTS_FILE = project_path("students.json")
 SETTINGS_FILE = project_path("settings.json")
@@ -133,6 +135,7 @@ WEBAPP_URL = os.getenv(
     "https://romanvereta-create.github.io/schedule-mini-app/",
 ).strip()
 WEBAPP_ORIGIN = os.getenv("SCHEDULE_WEBAPP_ORIGIN", "https://romanvereta-create.github.io")
+PUBLIC_SITE_URL = os.getenv("TEMLI_PUBLIC_SITE_URL", WEBAPP_ORIGIN).strip().rstrip("/")
 OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
 ALLOW_UNAUTHENTICATED = os.getenv("ALLOW_UNAUTHENTICATED", "false").lower() == "true"
@@ -184,6 +187,7 @@ BOT_APPLICATION = None
 TELEGRAM_DIAGNOSTICS = None
 BOT_LOOP = None
 REMINDER_TASK = None
+PROFILE_TASK = None
 
 class InterProcessRLock:
     """Re-entrant thread lock backed by a process-wide filesystem lock."""
@@ -743,18 +747,18 @@ def load_settings():
         "work_start": "06:00",
         "work_end": "00:00",
         "days_off": [],
-        "language": "ru",
-        "currency": "RUB",
+        "language": "en",
+        "currency": "USD",
         "onboarding_completed": False,
         "company_name": "",
         "inn": "",
         "ogrnip": "",
         "address": "",
         "phone": "",
-        "service_name": "Услуга",
+        "service_name": "Tutoring service",
         "tax_system": "",
         "email_sender": "",
-        "thanks_text": "СПАСИБО ЗА ОПЛАТУ!",
+        "thanks_text": "THANK YOU FOR YOUR PAYMENT!",
         "website": "",
         "bank_name": "",
         "bik": "",
@@ -790,9 +794,9 @@ def load_settings():
     settings["default_send_receipt_copy"] = bool(settings.get("default_send_receipt_copy", True))
     settings["onboarding_completed"] = bool(settings.get("onboarding_completed", False))
     if settings.get("language") not in {"ru", "en"}:
-        settings["language"] = "ru"
+        settings["language"] = "en"
     if settings.get("currency") not in {"RUB", "USD", "EUR", "CNY", "TRY"}:
-        settings["currency"] = "RUB"
+        settings["currency"] = "USD"
     raw_days_off = settings.get("days_off", [])
     settings["days_off"] = sorted({
         int(day) for day in raw_days_off
@@ -1432,13 +1436,20 @@ BOT3_FRONTEND_FILES = {
     "startup.js", "styles.css", "support.js", "ux.css", "ux.js",
     "locales/en.js", "vendor/telegram-web-app.js",
 }
+PUBLIC_SITE_FILES = {
+    "landing.html", "marketing.css", "demo.html", "demo.css", "demo.js",
+    "terms.html", "privacy.html",
+}
+PUBLIC_SCREENSHOT_FILES = {
+    "temli-calendar.png", "temli-students.png", "temli-payments.png",
+}
 
 _RATE_LIMITS = {
     "read": (_bounded_env_int("TEMLI_RATE_READ_PER_MINUTE", 180, 30, 1200), 60.0),
     "write": (_bounded_env_int("TEMLI_RATE_WRITE_PER_MINUTE", 60, 10, 600), 60.0),
     "export": (_bounded_env_int("TEMLI_RATE_EXPORT_PER_MINUTE", 10, 2, 60), 60.0),
 }
-_RATE_EXPORT_PATHS = {"/api/download_book", "/api/export_week_pdf"}
+_RATE_EXPORT_PATHS = {"/api/download_book", "/api/export_week_pdf", "/api/export_account_data"}
 _rate_lock = threading.Lock()
 _rate_windows = {}
 
@@ -1511,6 +1522,67 @@ def send_bot3_frontend_file(filename):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     return response
+
+
+def send_public_site_file(filename):
+    if filename not in PUBLIC_SITE_FILES:
+        return jsonify({"status": "error", "message": "Not found."}), 404
+    response = send_from_directory(CODE_DIR, filename, conditional=True)
+    response.headers["Cache-Control"] = "no-store" if filename.endswith(".html") else "public, max-age=300"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@flask_app.get("/")
+def public_landing():
+    return send_public_site_file("landing.html")
+
+
+@flask_app.get("/marketing.css")
+def public_marketing_styles():
+    return send_public_site_file("marketing.css")
+
+
+@flask_app.get("/demo/")
+def public_demo():
+    return send_public_site_file("demo.html")
+
+
+@flask_app.get("/demo.css")
+def public_demo_styles():
+    return send_public_site_file("demo.css")
+
+
+@flask_app.get("/demo.js")
+def public_demo_script():
+    return send_public_site_file("demo.js")
+
+
+@flask_app.get("/screenshots/<filename>")
+def public_screenshot(filename):
+    if filename not in PUBLIC_SCREENSHOT_FILES:
+        return jsonify({"status": "error", "message": "Not found."}), 404
+    response = send_from_directory(os.path.join(CODE_DIR, "marketing", "screenshots"), filename, conditional=True)
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@flask_app.get("/terms")
+def public_terms():
+    return send_public_site_file("terms.html")
+
+
+@flask_app.get("/privacy")
+def public_privacy():
+    return send_public_site_file("privacy.html")
+
+
+@flask_app.get("/open")
+def open_temli_bot():
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", BOT_USERNAME):
+        return redirect("/demo/", code=302)
+    return redirect(f"https://t.me/{BOT_USERNAME}?start=landing", code=302)
 
 
 @flask_app.get("/app/")
@@ -2235,6 +2307,103 @@ def export_week_pdf():
                 os.remove(temp_path)
             except OSError:
                 pass
+
+
+def _json_export_bytes(value):
+    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _redact_export_secrets(value):
+    """Defensively remove credential-shaped fields from portable exports."""
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_export_secrets(item)
+            for key, item in value.items()
+            if not re.search(r"token|secret|password|credential|api[_-]?key|encryption", str(key), re.I)
+        }
+    if isinstance(value, list):
+        return [_redact_export_secrets(item) for item in value]
+    return value
+
+
+@flask_app.route("/api/export_account_data", methods=["GET"])
+def export_account_data():
+    """Return a portable copy of the current tutor's TEMLI account data.
+
+    Credentials, encryption material and branded-bot tokens are deliberately
+    excluded. The archive is assembled in memory and is not retained by the
+    application server.
+    """
+    teacher_id = current_teacher_id()
+    registry = load_tenant_registry()
+    teacher = registry.get("teachers", {}).get(teacher_id, {})
+    if not isinstance(teacher, dict):
+        teacher = {}
+    public_teacher = {
+        key: teacher.get(key)
+        for key in ("id", "first_name", "last_name", "username", "eligibility")
+        if teacher.get(key) not in (None, "")
+    }
+    payloads = {
+        "account.json": {
+            "exported_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
+            "product": "TEMLI",
+            "teacher": public_teacher,
+        },
+        "settings.json": load_settings(),
+        "students.json": load_json(STUDENTS_FILE, {}),
+        "schedule.json": load_json(DATA_FILE, {}),
+        "payments.json": load_json(payments_file(), {}),
+    }
+    try:
+        consent = _load_json_raw(current_consent_ledger_file(), {})
+    except (OSError, RemoteStorageError):
+        consent = {}
+    if consent:
+        payloads["consent-history.json"] = consent
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+        for filename, value in payloads.items():
+            bundle.writestr(filename, _json_export_bytes(_redact_export_secrets(value)))
+        bundle.writestr(
+            "README.txt",
+            "TEMLI account export\n\n"
+            "This archive contains the live account data available to the signed-in tutor.\n"
+            "Bot tokens, encryption keys and other credentials are never included.\n",
+        )
+    archive.seek(0)
+    stamp = datetime.date.today().isoformat()
+    return send_file(
+        archive,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"temli-account-export-{stamp}.zip",
+        max_age=0,
+    )
+
+
+@flask_app.route("/api/request_account_deletion", methods=["POST"])
+def request_account_deletion():
+    """Record a verified deletion request without pretending backups vanished instantly."""
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or data.get("confirmation") != "DELETE TEMLI":
+        return jsonify({"status": "error", "code": "confirmation_required"}), 400
+    teacher_id = current_teacher_id()
+    path = project_path("account_deletion_requests.json")
+    with DATA_LOCK:
+        requests = _load_json_raw(path, {})
+        if not isinstance(requests, dict):
+            requests = {}
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        reference = "DEL-" + hashlib.sha256(f"{teacher_id}:{now}".encode()).hexdigest()[:10].upper()
+        requests[teacher_id] = {
+            "requested_at": now,
+            "reference": reference,
+            "status": "pending_verification",
+        }
+        _save_json_raw(path, requests)
+    return jsonify({"status": "ok", "reference": reference})
 
 
 def _requested_consent_documents():
@@ -4239,11 +4408,55 @@ async def reminder_worker(application: Application):
         await asyncio.sleep(60)
 
 
+async def configure_bot_profile(application: Application):
+    """Publish a polished English-first Telegram profile and Russian locale."""
+    default_commands = [
+        BotCommand("start", "Open TEMLI"),
+        BotCommand("support", "Get help"),
+        BotCommand("privacy", "Privacy notice"),
+        BotCommand("terms", "Terms of Service"),
+        BotCommand("paysupport", "Payment support"),
+    ]
+    russian_commands = [
+        BotCommand("start", "Открыть TEMLI"),
+        BotCommand("support", "Получить помощь"),
+        BotCommand("privacy", "Конфиденциальность"),
+        BotCommand("terms", "Условия использования"),
+        BotCommand("paysupport", "Помощь с оплатой"),
+    ]
+    try:
+        await application.bot.set_my_name("TEMLI")
+        await application.bot.set_my_short_description(
+            "Plan lessons, track payments, and keep every student detail in one place."
+        )
+        await application.bot.set_my_description(
+            "A calm Telegram workspace for independent tutors. Plan individual and group lessons, "
+            "track payments, keep student details together, and send optional reminders through "
+            "your own branded bot. For adult independent tutors."
+        )
+        await application.bot.set_my_commands(default_commands)
+        await application.bot.set_my_short_description(
+            "Расписание, оплаты и данные учеников — в одном рабочем пространстве.",
+            language_code="ru",
+        )
+        await application.bot.set_my_description(
+            "Рабочее пространство частного преподавателя в Telegram: индивидуальные и групповые "
+            "занятия, учёт оплат, карточки учеников и уведомления через собственного брендированного бота.",
+            language_code="ru",
+        )
+        await application.bot.set_my_commands(russian_commands, language_code="ru")
+        print("TEMLI Telegram profile: English default and Russian locale configured", flush=True)
+    except Exception as error:
+        # Profile synchronization is useful but must never stop the bot itself.
+        print(f"TEMLI Telegram profile: deferred ({type(error).__name__})", flush=True)
+
+
 async def post_init(application: Application):
-    global BOT_APPLICATION, BOT_LOOP, REMINDER_TASK
+    global BOT_APPLICATION, BOT_LOOP, REMINDER_TASK, PROFILE_TASK
     BOT_APPLICATION = application
     BOT_LOOP = asyncio.get_running_loop()
     print("TEMLI Telegram: initialized", flush=True)
+    PROFILE_TASK = asyncio.create_task(configure_bot_profile(application), name="telegram-profile-sync")
     # post_init выполняется до перехода Application в running-state, поэтому
     # Application.create_task() здесь создаёт предупреждение PTB. Храним обычную
     # asyncio-задачу и явно завершаем её в post_stop.
@@ -4251,13 +4464,21 @@ async def post_init(application: Application):
 
 
 async def post_stop(application: Application):
-    global REMINDER_TASK, BOT_APPLICATION, BOT_LOOP
+    global REMINDER_TASK, PROFILE_TASK, BOT_APPLICATION, BOT_LOOP
     task = REMINDER_TASK
     REMINDER_TASK = None
     if task is not None and not task.done():
         task.cancel()
         try:
             await task
+        except asyncio.CancelledError:
+            pass
+    profile_task = PROFILE_TASK
+    PROFILE_TASK = None
+    if profile_task is not None and not profile_task.done():
+        profile_task.cancel()
+        try:
+            await profile_task
         except asyncio.CancelledError:
             pass
     BOT_APPLICATION = None
@@ -4287,6 +4508,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raise
 
 
+def _command_uses_russian(update):
+    return str(getattr(update.effective_user, "language_code", "") or "").lower().startswith("ru")
+
+
+async def support_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "Поддержка TEMLI: 46rus@mail.ru\n\nОпишите проблему и приложите скриншот. Никогда не отправляйте токен бота."
+        if _command_uses_russian(update)
+        else "TEMLI support: 46rus@mail.ru\n\nDescribe the issue and attach a screenshot. Never send your bot token."
+    )
+    await reply_text_with_retry(update.message, text)
+
+
+async def privacy_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    label = "Уведомление о конфиденциальности" if _command_uses_russian(update) else "Privacy notice"
+    await reply_text_with_retry(update.message, f"{label}: {PUBLIC_SITE_URL}/privacy")
+
+
+async def terms_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    label = "Условия использования" if _command_uses_russian(update) else "Terms of Service"
+    await reply_text_with_retry(update.message, f"{label}: {PUBLIC_SITE_URL}/terms")
+
+
+async def payment_support_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "Платная подписка TEMLI пока не запущена. Если у вас появился вопрос о списании, напишите: 46rus@mail.ru"
+        if _command_uses_russian(update)
+        else "Paid TEMLI subscriptions are not live yet. If you have a billing question, email 46rus@mail.ru"
+    )
+    await reply_text_with_retry(update.message, text)
+
+
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     from invitation_channels import accept_main, recipient_only
@@ -4312,7 +4565,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     trace_start("loading_settings")
     with teacher_scope(str(u.id)):
-        language = load_settings().get("language", "ru")
+        language = load_settings().get("language", "en")
     ready_text = ("TEMLI is ready for adult independent tutors."
                   if language == "en" else "TEMLI готов к работе для совершеннолетних частных преподавателей.")
     open_text = "Open TEMLI" if language == "en" else "Открыть TEMLI"

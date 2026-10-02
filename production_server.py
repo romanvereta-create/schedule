@@ -136,6 +136,10 @@ def run(host):
             .build()
         )
         app.add_handler(host.CommandHandler("start", host.start))
+        app.add_handler(host.CommandHandler("support", host.support_command))
+        app.add_handler(host.CommandHandler("privacy", host.privacy_command))
+        app.add_handler(host.CommandHandler("terms", host.terms_command))
+        app.add_handler(host.CommandHandler("paysupport", host.payment_support_command))
         server = make_server(host)  # Bind before starting background tasks.
         stopping = threading.Event()
         def serve():
