@@ -1324,6 +1324,7 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
         if (result.status !== 'ok') throw new Error(result.message || 'Ошибка изменения оплаты');
         return result.lesson;
     }, async resultLesson => {
+        showPaymentSavedNotice(makePaid);
         if (!applyReturnedLesson(lesson.date, lesson.id, resultLesson)) await refreshScheduleOnly();
         scheduleWorkCenterRefresh(0);
     }, error => {
@@ -1334,6 +1335,13 @@ async function setGroupMemberPaidState(lesson, member, makePaid) {
 
 function closeActionMenu() {
     document.getElementById('action-menu-overlay').classList.add('hidden');
+}
+
+function showPaymentSavedNotice(makePaid) {
+    uxMessage(botText(
+        makePaid ? '✓ Оплата проведена' : '✓ Оплата снята',
+        makePaid ? '✓ Payment recorded' : '✓ Payment removed'
+    ));
 }
 
 const paymentMutationQueues = new Map();
@@ -2233,6 +2241,7 @@ bindReliableTap(document.getElementById('btn-action-paid'), () => {
         if (result.status !== 'ok') throw new Error(result.message || 'Ошибка изменения оплаты');
         return result.lesson;
     }, async resultLesson => {
+        showPaymentSavedNotice(makePaid);
         if (!applyReturnedLesson(lesson.date, lesson.id, resultLesson)) await refreshScheduleOnly();
         scheduleWorkCenterRefresh(0);
     }, error => {

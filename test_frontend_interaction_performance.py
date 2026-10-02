@@ -29,12 +29,14 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
         group = group[:group.index("function closeActionMenu")]
         self.assertNotIn("confirm(", group)
         self.assertLess(group.index("applyReturnedLesson("), group.index("apiFetch('/mark_paid'"))
+        self.assertIn("showPaymentSavedNotice(makePaid)", group)
 
         direct = self.app[self.app.index("bindReliableTap(document.getElementById('btn-action-paid')"):]
         direct = direct[:direct.index("document.getElementById('btn-action-subscription').onclick")]
         self.assertNotIn("confirm(", direct)
         self.assertNotIn("paid-confirm-overlay", direct)
         self.assertLess(direct.index("applyReturnedLesson("), direct.index("apiFetch('/mark_paid'"))
+        self.assertIn("showPaymentSavedNotice(makePaid)", direct)
 
         reliable = self.app[self.app.index("function bindReliableTap"):]
         reliable = reliable[:reliable.index("function startMove")]
