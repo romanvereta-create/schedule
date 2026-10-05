@@ -1110,7 +1110,7 @@ def main():
     server = create_server(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8080")),
+        port=int(os.getenv("PORT", "3000")),
         threads=4,
         max_request_body_size=MAX_REQUEST_BYTES,
         expose_tracebacks=False,
