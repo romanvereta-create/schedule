@@ -10,7 +10,18 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.ux = (ROOT / "ux.js").read_text(encoding="utf-8")
         cls.app = (ROOT / "app.js").read_text(encoding="utf-8")
+        cls.styles = (ROOT / "styles.css").read_text(encoding="utf-8")
         cls.personal_notifications = (ROOT / "personal_notifications.js").read_text(encoding="utf-8")
+
+    def test_language_segment_highlight_matches_option_order(self):
+        self.assertIn(
+            '.language-segment[data-active="ru"] .language-segment-glow { transform: translateX(100%); }',
+            self.styles,
+        )
+        self.assertNotIn(
+            '.language-segment[data-active="en"] .language-segment-glow { transform: translateX(100%); }',
+            self.styles,
+        )
 
     def test_draft_capture_is_deferred_out_of_input_handler(self):
         self.assertIn("overlay.addEventListener('input',scheduleCapture)", self.ux)
