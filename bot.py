@@ -748,7 +748,7 @@ def load_settings():
         "work_end": "00:00",
         "days_off": [],
         "language": "en",
-        "currency": "USD",
+        "currency": "EUR",
         "onboarding_completed": False,
         "company_name": "",
         "inn": "",
@@ -796,7 +796,7 @@ def load_settings():
     if settings.get("language") not in {"ru", "en"}:
         settings["language"] = "en"
     if settings.get("currency") not in {"RUB", "USD", "EUR", "CNY", "TRY"}:
-        settings["currency"] = "USD"
+        settings["currency"] = "EUR"
     raw_days_off = settings.get("days_off", [])
     settings["days_off"] = sorted({
         int(day) for day in raw_days_off

@@ -60,7 +60,7 @@ const state = {
     isMoving: false,
     pendingMove: null,
     editingExisting: false,
-    settings: { default_reminders_enabled: true, default_send_receipts: true, default_send_receipt_copy: true, zoom_link: '', work_start: '06:00', work_end: '00:00', days_off: [], language: 'en', currency: 'USD' },
+    settings: { default_reminders_enabled: true, default_send_receipts: true, default_send_receipt_copy: true, zoom_link: '', work_start: '06:00', work_end: '00:00', days_off: [], language: 'en', currency: 'EUR' },
     datePickerMonth: new Date(),
     workCenter: null,
     subscriptionStudentId: '',
@@ -433,7 +433,7 @@ async function loadSettings() {
         if (data.status === 'ok') {
             state.settings = data.settings || state.settings;
             await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en');
-            window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD');
+            window.TEMLI_I18N?.setCurrency(state.settings.currency || 'EUR');
             state.onboardingNeeded = data.onboarding_needed === true;
             updateVisibleHoursFromSettingsAndLessons();
             if (!initialDataReady) autoFitWeekPending = true;
@@ -617,7 +617,7 @@ async function loadBootstrap({ applySettings = true } = {}) {
     if (applySettings) {
         state.settings = data.settings || state.settings;
         await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en');
-        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD');
+        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'EUR');
         state.onboardingNeeded = data.onboarding_needed === true;
         updateVisibleHoursFromSettingsAndLessons();
         if (!initialDataReady) autoFitWeekPending = true;
@@ -2907,7 +2907,7 @@ function syncLanguageSegment(language = document.getElementById('interface-langu
 function fillAppSettingsForm() {
     document.getElementById('interface-language').value = state.settings.language || 'en';
     syncLanguageSegment(state.settings.language || 'en');
-    document.getElementById('interface-currency').value = state.settings.currency || 'USD';
+    document.getElementById('interface-currency').value = state.settings.currency || 'EUR';
     document.getElementById('default-reminders-enabled').checked = state.settings.default_student_reminders === true;
     document.getElementById('default-parent-end').checked = state.settings.parent_lesson_end === true;
     document.getElementById('teacher-block-reminders').checked = state.settings.teacher_block_reminders === true;
@@ -3208,7 +3208,7 @@ document.getElementById('btn-app-settings').onclick = () => {
 async function closeAppSettings() {
     document.getElementById('personal-bot-token').value = '';
     await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en', { persist: false });
-    window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD', { persist: false });
+    window.TEMLI_I18N?.setCurrency(state.settings.currency || 'EUR', { persist: false });
     document.getElementById('app-settings-overlay').classList.add('hidden');
 }
 document.getElementById('btn-close-app-settings').onclick = closeAppSettings;
@@ -3242,7 +3242,7 @@ document.getElementById('btn-save-app-settings').onclick = async () => {
     try {
         const settings = {
             language: document.getElementById('interface-language').value || 'en',
-            currency: document.getElementById('interface-currency').value || 'USD',
+            currency: document.getElementById('interface-currency').value || 'EUR',
             default_student_reminders: document.getElementById('default-reminders-enabled').checked,
             parent_lesson_end: document.getElementById('default-parent-end').checked,
             teacher_block_reminders: document.getElementById('teacher-block-reminders').checked,
@@ -3266,7 +3266,7 @@ document.getElementById('btn-save-app-settings').onclick = async () => {
         state.settings = result.settings || { ...state.settings, ...settings };
         window.dispatchEvent(new CustomEvent('temli-saved', { detail: { overlay: 'app-settings-overlay' } }));
         await window.TEMLI_I18N?.setLanguage(state.settings.language || 'en');
-        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'USD');
+        window.TEMLI_I18N?.setCurrency(state.settings.currency || 'EUR');
         updateVisibleHoursFromSettingsAndLessons();
         autoFitWeekPending = true;
         renderCalendar();

@@ -1,7 +1,7 @@
 (() => {
-    const VERSION = '1.0.0';
+    const VERSION = '1.0.1';
     const LANGUAGES = {
-        en: { label: 'English', locale: 'en-US', currency: 'USD' },
+        en: { label: 'English', locale: 'en-US', currency: 'EUR' },
         ru: { label: 'Русский', locale: 'ru-RU', currency: 'RUB' },
     };
     const CURRENCIES = {
@@ -151,9 +151,9 @@
     const textState = new WeakMap();
     const attrState = new WeakMap();
     let language = localStorage.getItem('temli-language') || 'en';
-    let currency = localStorage.getItem('temli-currency') || 'USD';
+    let currency = localStorage.getItem('temli-currency') || 'EUR';
     if (!LANGUAGES[language]) language = 'en';
-    if (!CURRENCIES[currency]) currency = 'USD';
+    if (!CURRENCIES[currency]) currency = 'EUR';
 
     function currencySymbol() {
         return CURRENCIES[currency]?.symbol || '$';
@@ -279,7 +279,7 @@
     }
 
     function setCurrency(code, { persist = true } = {}) {
-        currency = CURRENCIES[code] ? code : 'USD';
+        currency = CURRENCIES[code] ? code : 'EUR';
         if (persist) localStorage.setItem('temli-currency', currency);
         document.documentElement.style.setProperty('--currency-symbol', `"${currencySymbol()}"`);
         apply();
@@ -331,7 +331,7 @@
         setLanguage, setCurrency, language: () => language,
         currency: () => currency, currencySymbol,
         locale: () => LANGUAGES[language]?.locale || 'en-US',
-        recommendedCurrency: code => LANGUAGES[code]?.currency || 'USD',
+        recommendedCurrency: code => LANGUAGES[code]?.currency || 'EUR',
         formatNumber
     };
 })();

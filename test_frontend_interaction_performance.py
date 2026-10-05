@@ -23,6 +23,10 @@ class FrontendInteractionPerformanceTests(unittest.TestCase):
             self.styles,
         )
 
+    def test_english_first_defaults_use_euros(self):
+        self.assertIn("language: 'en', currency: 'EUR'", self.app)
+        self.assertIn("localStorage.getItem('temli-currency') || 'EUR'", (ROOT / "i18n.js").read_text(encoding="utf-8"))
+
     def test_draft_capture_is_deferred_out_of_input_handler(self):
         self.assertIn("overlay.addEventListener('input',scheduleCapture)", self.ux)
         self.assertIn("requestIdleCallback", self.ux)
