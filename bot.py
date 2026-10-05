@@ -9,6 +9,7 @@ DEPENDENCIES = [
     ("Flask-Cors", "flask_cors"),
     ("fpdf==1.7.2", "fpdf"),
     ("openpyxl==3.1.2", "openpyxl"),
+    ("Pillow>=10,<12", "PIL"),
     ("cryptography>=44,<47", "cryptography"),
 ]
 
@@ -39,9 +40,11 @@ import tempfile
 import threading
 import time
 import shutil
+import uuid
+import zipfile
 from contextlib import contextmanager
 from functools import wraps
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 if os.name == "nt":
     import msvcrt
@@ -49,22 +52,73 @@ else:
     import fcntl
 
 import pytz
-from flask import Flask, jsonify, request, send_file, g
+from flask import Flask, jsonify, redirect, request, send_file, send_from_directory, g
 from flask_cors import CORS
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 from fpdf import FPDF
+import fpdf.fpdf as fpdf_module
 import openpyxl
+from PIL import Image, ImageOps, UnidentifiedImageError
 from openpyxl.styles import Font, Alignment, Border, Side
 
 from persistent_storage import resolve_storage_root
+from remote_storage import RemoteStorageError, configured_remote_storage
 from calendar_undo import CalendarUndo
+from consent_ledger import (
+    ConsentConfigurationError, ConsentLedgerError, DOCUMENT_TYPES,
+    append_events as append_consent_events, document_config as consent_document_config,
+    ledger_hmac_key as consent_ledger_hmac_key,
+    status as consent_ledger_status,
+)
 
 CALENDAR_UNDO = CalendarUndo()
 
 CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# pyfpdf 1.7.2 writes generated Unicode font metrics next to the source TTF by
+# default. Production runs with a read-only application image, so the first
+# receipt would otherwise fail with EROFS. Keep this non-personal cache in the
+# container's writable tmpfs instead.
+FPDF_CACHE_DIR = os.path.join(tempfile.gettempdir(), "temli-fpdf-cache")
+os.makedirs(FPDF_CACHE_DIR, exist_ok=True)
+fpdf_module.FPDF_CACHE_MODE = 2
+fpdf_module.FPDF_CACHE_DIR = FPDF_CACHE_DIR
+
+
+def resolve_public_release_id():
+    """Return a non-secret identifier for the code currently serving Bot3."""
+    configured = os.getenv("TEMLI_RELEASE_ID", "").strip()
+    if configured and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", configured):
+        return configured
+
+    digest = hashlib.sha256()
+    for filename in ("bot.py", "index.html", "startup.js", "app.js", "ux.js"):
+        path = os.path.join(CODE_DIR, filename)
+        try:
+            with open(path, "rb") as source:
+                digest.update(filename.encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(source.read())
+        except OSError:
+            continue
+    return f"bot3-{digest.hexdigest()[:12]}"
+
+
+BOT3_RELEASE_ID = resolve_public_release_id()
 # BASE_DIR remains the data root for tenant helpers and personal-bot modules.
-BASE_DIR = resolve_storage_root(CODE_DIR)
+REMOTE_STORAGE = configured_remote_storage()
+if REMOTE_STORAGE:
+    # Only locks and temporary binary artifacts live here. JSON data is never
+    # written to this directory while remote storage is enabled.
+    BASE_DIR = os.path.abspath(os.getenv(
+        "TEMLI_REMOTE_SCRATCH_DIR",
+        os.path.join(tempfile.gettempdir(), "temli-remote"),
+    ))
+    os.makedirs(BASE_DIR, exist_ok=True)
+else:
+    BASE_DIR = resolve_storage_root(CODE_DIR)
 
 
 def project_path(*parts):
@@ -72,26 +126,68 @@ def project_path(*parts):
 
 
 TOKEN = os.getenv("SCHEDULE_BOT_TOKEN")
+BOT_USERNAME = os.getenv("SCHEDULE_BOT_USERNAME", "").strip().lstrip("@")
 DATA_FILE = project_path("schedule.json")
 STUDENTS_FILE = project_path("students.json")
 SETTINGS_FILE = project_path("settings.json")
-WEBAPP_URL = "https://romanvereta-create.github.io/schedule-mini-app/"
+WEBAPP_URL = os.getenv(
+    "SCHEDULE_WEBAPP_URL",
+    "https://romanvereta-create.github.io/schedule-mini-app/",
+).strip()
 WEBAPP_ORIGIN = os.getenv("SCHEDULE_WEBAPP_ORIGIN", "https://romanvereta-create.github.io")
+PUBLIC_SITE_URL = os.getenv("TEMLI_PUBLIC_SITE_URL", WEBAPP_ORIGIN).strip().rstrip("/")
 OWNER_ID = os.getenv("SCHEDULE_OWNER_ID", "").strip()
 TIMEZONE_NAME = os.getenv("SCHEDULE_TIMEZONE", "Europe/Moscow")
 ALLOW_UNAUTHENTICATED = os.getenv("ALLOW_UNAUTHENTICATED", "false").lower() == "true"
 RECEIPTS_DIR = project_path("receipts")
+
+
+def versioned_webapp_url():
+    """Give Telegram a distinct WebApp URL for every frontend release."""
+    parts = urlsplit(WEBAPP_URL)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["v"] = BOT3_RELEASE_ID
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _bounded_env_int(name, default, minimum, maximum):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+INIT_DATA_MAX_AGE_SECONDS = _bounded_env_int(
+    "TEMLI_INIT_DATA_TTL_SECONDS", 15 * 60, 5 * 60, 60 * 60
+)
+MAX_REQUEST_BYTES = _bounded_env_int(
+    "TEMLI_MAX_REQUEST_BYTES", 8 * 1024 * 1024, 1024 * 1024, 16 * 1024 * 1024
+)
+MAX_IMAGE_PIXELS = _bounded_env_int(
+    "TEMLI_MAX_IMAGE_PIXELS", 20_000_000, 1_000_000, 40_000_000
+)
+CONSENT_ENFORCEMENT = os.getenv("TEMLI_CONSENT_ENFORCEMENT", "false").strip().lower() == "true"
+ELIGIBILITY_ENFORCEMENT = os.getenv("TEMLI_ELIGIBILITY_ENFORCEMENT", "true").strip().lower() != "false"
+ELIGIBILITY_VERSION = "2026-10-02"
 RECEIPT_ASSETS_DIR = project_path("receipt_assets")
 BOOK_FILE = project_path("book.xlsx")
 FONT_REGULAR = os.path.join(CODE_DIR, "DejaVuSansCondensed.ttf")
 FONT_BOLD = os.path.join(CODE_DIR, "DejaVuSansCondensed-Bold.ttf")
 TENANT_DATA_DIR = project_path("teacher_data")
 TENANT_REGISTRY_FILE = project_path("teacher_registry.json")
+CONSENT_LEDGER_FILE = project_path("consent_ledger.json")
 TEACHER_CONTEXT = contextvars.ContextVar("schedule_teacher_id", default="")
+PAYMENT_TRANSACTION = contextvars.ContextVar("schedule_payment_transaction", default=None)
+REMOTE_REQUEST_CACHE = contextvars.ContextVar("schedule_remote_request_cache", default=None)
+READINESS_LOCK = threading.Lock()
+READINESS_CACHE = {"expires_at": 0.0, "status_code": 503, "payload": None}
 
 BOT_APPLICATION = None
+TELEGRAM_DIAGNOSTICS = None
 BOT_LOOP = None
 REMINDER_TASK = None
+PROFILE_TASK = None
 
 class InterProcessRLock:
     """Re-entrant thread lock backed by a process-wide filesystem lock."""
@@ -163,6 +259,23 @@ def _load_json_raw(filename, default=None):
     if default is None:
         default = {}
     with DATA_LOCK:
+        if REMOTE_STORAGE:
+            try:
+                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR).replace(os.sep, "/")
+                transaction = PAYMENT_TRANSACTION.get()
+                if transaction is not None and relative in transaction["json"]:
+                    return copy.deepcopy(transaction["json"][relative])
+                cache = REMOTE_REQUEST_CACHE.get()
+                if cache is not None and relative in cache:
+                    return copy.deepcopy(cache[relative])
+                value = REMOTE_STORAGE.read_json(relative, default)
+                if cache is not None:
+                    cache[relative] = copy.deepcopy(value)
+                return value
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Не удалось прочитать удалённое хранилище ({exc})."
+                ) from exc
         if os.path.exists(filename):
             try:
                 with open(filename, "r", encoding="utf-8") as f:
@@ -176,6 +289,26 @@ def _load_json_raw(filename, default=None):
 
 
 def _save_json_raw(filename, data):
+    if REMOTE_STORAGE:
+        with DATA_LOCK:
+            try:
+                relative = os.path.relpath(os.path.abspath(filename), BASE_DIR).replace(os.sep, "/")
+                transaction = PAYMENT_TRANSACTION.get()
+                if transaction is not None:
+                    transaction["json"][relative] = copy.deepcopy(data)
+                    cache = REMOTE_REQUEST_CACHE.get()
+                    if cache is not None:
+                        cache[relative] = copy.deepcopy(data)
+                    return
+                REMOTE_STORAGE.write_json(relative, data)
+                cache = REMOTE_REQUEST_CACHE.get()
+                if cache is not None:
+                    cache[relative] = copy.deepcopy(data)
+                return
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Не удалось записать удалённое хранилище ({exc})."
+                ) from exc
     directory = os.path.dirname(os.path.abspath(filename)) or "."
     os.makedirs(directory, exist_ok=True)
     with DATA_LOCK:
@@ -209,6 +342,50 @@ def _save_json_raw(filename, data):
                 os.remove(temp_path)
 
 
+def _prefetch_remote_json(files):
+    """Fill the current request cache using one storage round trip."""
+    if not REMOTE_STORAGE or not files:
+        return
+    cache = REMOTE_REQUEST_CACHE.get()
+    if cache is None:
+        return
+    missing = {}
+    for filename, default in files.items():
+        relative = _remote_relative_path(filename)
+        if relative not in cache:
+            missing[relative] = default
+    if not missing:
+        return
+    try:
+        values = REMOTE_STORAGE.read_json_batch(missing)
+    except RemoteStorageError as exc:
+        raise DataCorruptionError(
+            f"Не удалось прочитать удалённое хранилище ({exc})."
+        ) from exc
+    for relative, value in values.items():
+        cache[relative] = copy.deepcopy(value)
+
+
+def _prefetch_payment_json(*names):
+    """Read a payment screen's JSON state in one cross-region request.
+
+    The production candidate stores data in Russia. A payment action used to
+    serially load schedule, students, settings and history, turning one click
+    into several Netherlands-to-Russia round trips. The per-request cache
+    keeps the usual read/modify/write semantics while the batch API supplies
+    those independent documents together.
+    """
+    if not REMOTE_STORAGE:
+        return
+    defaults = {
+        "schedule": (tenant_file(DATA_FILE), {}),
+        "students": (tenant_file(STUDENTS_FILE), {}),
+        "settings": (tenant_file(SETTINGS_FILE), {}),
+        "payments": (payments_file(), {}),
+    }
+    _prefetch_remote_json({defaults[name][0]: defaults[name][1] for name in names})
+
+
 def _safe_teacher_id(value):
     value = str(value or "").strip()
     return re.sub(r"[^0-9A-Za-z_-]", "_", value) if value else ""
@@ -216,6 +393,9 @@ def _safe_teacher_id(value):
 
 def legacy_root_data_exists():
     """Return True when assigning the root tenant implicitly could expose data."""
+    if REMOTE_STORAGE:
+        return any(bool(_load_json_raw(filename, {}))
+                   for filename in (DATA_FILE, STUDENTS_FILE, SETTINGS_FILE))
     for filename in (DATA_FILE, STUDENTS_FILE, SETTINGS_FILE):
         if not os.path.exists(filename):
             continue
@@ -296,6 +476,47 @@ def ensure_teacher_registered(teacher_id, user=None):
     return teacher_id
 
 
+def teacher_eligibility_status(teacher_id=None):
+    teacher_id = str(teacher_id or getattr(g, "teacher_id", "") or "").strip()
+    registry = load_tenant_registry()
+    info = registry.get("teachers", {}).get(teacher_id, {})
+    eligibility = info.get("eligibility", {}) if isinstance(info, dict) else {}
+    ready = bool(
+        isinstance(eligibility, dict)
+        and eligibility.get("version") == ELIGIBILITY_VERSION
+        and eligibility.get("adult_private_tutor") is True
+        and eligibility.get("not_school_or_organization") is True
+        and eligibility.get("accepted_at")
+    )
+    return {
+        "ready": ready,
+        "version": ELIGIBILITY_VERSION,
+        "accepted_at": eligibility.get("accepted_at") if ready else None,
+    }
+
+
+def accept_teacher_eligibility(teacher_id, payload):
+    teacher_id = str(teacher_id or "").strip()
+    if not teacher_id or not isinstance(payload, dict):
+        raise ValueError("invalid_eligibility")
+    if payload.get("adult_private_tutor") is not True or payload.get("not_school_or_organization") is not True:
+        raise ValueError("eligibility_not_confirmed")
+    with DATA_LOCK:
+        registry = load_tenant_registry()
+        teachers = registry.setdefault("teachers", {})
+        info = teachers.get(teacher_id, {}) if isinstance(teachers.get(teacher_id), dict) else {"id": teacher_id}
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        info["eligibility"] = {
+            "version": ELIGIBILITY_VERSION,
+            "adult_private_tutor": True,
+            "not_school_or_organization": True,
+            "accepted_at": now,
+        }
+        teachers[teacher_id] = info
+        save_tenant_registry(registry)
+    return teacher_eligibility_status(teacher_id)
+
+
 def registered_teacher_ids(include_legacy=True):
     registry = load_tenant_registry()
     ids = [str(x) for x in registry.get("teachers", {}).keys() if str(x).strip()]
@@ -335,6 +556,33 @@ def tenant_file(filename, teacher_id=None):
     return filename if root == BASE_DIR else os.path.join(root, os.path.basename(filename))
 
 
+def current_consent_ledger_file():
+    return tenant_file(CONSENT_LEDGER_FILE)
+
+
+def configured_consent_documents():
+    return consent_document_config(os.environ)
+
+
+def current_consent_status():
+    documents = configured_consent_documents()
+    integrity_key = consent_ledger_hmac_key(os.environ)
+    raw = _load_json_raw(current_consent_ledger_file(), {})
+    return consent_ledger_status(raw, int(current_teacher_id()), documents, integrity_key)
+
+
+def record_consent_action(kinds, action):
+    documents = configured_consent_documents()
+    integrity_key = consent_ledger_hmac_key(os.environ)
+    with DATA_LOCK:
+        path = current_consent_ledger_file()
+        ledger = append_consent_events(
+            _load_json_raw(path, {}), int(current_teacher_id()), documents, integrity_key, kinds, action
+        )
+        _save_json_raw(path, ledger)
+    return consent_ledger_status(ledger, int(current_teacher_id()), documents, integrity_key)
+
+
 def current_book_file():
     return tenant_file(BOOK_FILE)
 
@@ -345,6 +593,29 @@ def current_receipts_dir():
 
 def current_receipt_assets_dir():
     return tenant_file(RECEIPT_ASSETS_DIR)
+
+
+def _remote_relative_path(path):
+    """Map a scratch path to the same tenant-relative path on Russian storage."""
+    relative = os.path.relpath(os.path.abspath(path), BASE_DIR).replace(os.sep, "/")
+    if relative == ".." or relative.startswith("../"):
+        raise RemoteStorageError("invalid_path")
+    return relative
+
+
+def _atomic_local_bytes(path, raw):
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="temli_asset_", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            target.write(raw)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def load_json(filename, default=None):
@@ -467,24 +738,27 @@ def load_settings():
         "default_reminders_enabled": False,
         "default_student_reminders": False,
         "parent_lesson_end": False,
+        "teacher_block_reminders": False,
+        "teacher_block_reminder_minutes": 30,
+        "teacher_block_gap_minutes": 60,
         "default_send_receipts": True,
         "default_send_receipt_copy": True,
         "zoom_link": "",
         "work_start": "06:00",
         "work_end": "00:00",
         "days_off": [],
-        "language": "ru",
-        "currency": "RUB",
+        "language": "en",
+        "currency": "USD",
         "onboarding_completed": False,
         "company_name": "",
         "inn": "",
         "ogrnip": "",
         "address": "",
         "phone": "",
-        "service_name": "Услуга",
+        "service_name": "Tutoring service",
         "tax_system": "",
         "email_sender": "",
-        "thanks_text": "СПАСИБО ЗА ОПЛАТУ!",
+        "thanks_text": "THANK YOU FOR YOUR PAYMENT!",
         "website": "",
         "bank_name": "",
         "bik": "",
@@ -513,13 +787,16 @@ def load_settings():
     settings["default_reminders_enabled"] = bool(settings.get("default_reminders_enabled", False))
     settings["default_student_reminders"] = settings.get("default_student_reminders") is True
     settings["parent_lesson_end"] = settings.get("parent_lesson_end") is True
+    settings["teacher_block_reminders"] = settings.get("teacher_block_reminders") is True
+    settings["teacher_block_reminder_minutes"] = 30
+    settings["teacher_block_gap_minutes"] = 60
     settings["default_send_receipts"] = bool(settings.get("default_send_receipts", True))
     settings["default_send_receipt_copy"] = bool(settings.get("default_send_receipt_copy", True))
     settings["onboarding_completed"] = bool(settings.get("onboarding_completed", False))
     if settings.get("language") not in {"ru", "en"}:
-        settings["language"] = "ru"
+        settings["language"] = "en"
     if settings.get("currency") not in {"RUB", "USD", "EUR", "CNY", "TRY"}:
-        settings["currency"] = "RUB"
+        settings["currency"] = "USD"
     raw_days_off = settings.get("days_off", [])
     settings["days_off"] = sorted({
         int(day) for day in raw_days_off
@@ -540,6 +817,18 @@ def get_receipt_asset_path(settings, key):
     if not filename:
         return ""
     path = os.path.join(current_receipt_assets_dir(), os.path.basename(filename))
+    if REMOTE_STORAGE:
+        try:
+            raw = REMOTE_STORAGE.read_file(_remote_relative_path(path))
+        except RemoteStorageError as exc:
+            raise DataCorruptionError(
+                f"Не удалось прочитать файл из удалённого хранилища ({exc})."
+            ) from exc
+        if raw is None:
+            if os.path.exists(path):
+                os.remove(path)
+            return ""
+        _atomic_local_bytes(path, raw)
     return path if os.path.exists(path) else ""
 
 
@@ -806,8 +1095,34 @@ def generate_receipt_pdf(settings, client_name, amount, lesson_id, receipt_numbe
 @serialized_data
 def init_book():
     book_file = current_book_file()
-    if os.path.exists(book_file):
+    if REMOTE_STORAGE:
+        transaction = PAYMENT_TRANSACTION.get()
+        relative = _remote_relative_path(book_file)
+        if (transaction is not None and transaction.get("book_loaded")
+                and os.path.exists(book_file)):
+            return
+        # The single production process keeps the verified copy it fetched at
+        # startup or wrote in the preceding payment transaction. Re-downloading
+        # the same XLSX for every payment added a full cross-region round trip.
+        if (os.path.exists(book_file)
+                and REMOTE_STORAGE.has_cached_file_version(relative)):
+            if transaction is not None:
+                transaction["book_loaded"] = True
+            return
+        try:
+            raw = REMOTE_STORAGE.read_file(relative)
+        except RemoteStorageError as exc:
+            raise DataCorruptionError(
+                f"Не удалось прочитать книгу из удалённого хранилища ({exc})."
+            ) from exc
+        if raw is not None:
+            _atomic_local_bytes(book_file, raw)
+            if transaction is not None:
+                transaction["book_loaded"] = True
+            return
+    elif os.path.exists(book_file):
         return
+    os.makedirs(os.path.dirname(book_file), exist_ok=True)
     wb = openpyxl.Workbook()
     try:
         ws = wb.active
@@ -834,10 +1149,15 @@ def init_book():
                 os.remove(temporary)
     finally:
         wb.close()
+    if REMOTE_STORAGE and transaction is not None:
+        transaction["book_loaded"] = True
 
 
 def add_receipt_to_book(client_name, amount, receipt_number, created_at, status="Оплачено"):
     with DATA_LOCK:
+        transaction = PAYMENT_TRANSACTION.get()
+        if REMOTE_STORAGE and transaction is None:
+            raise RuntimeError("Удалённая книга изменяется только внутри платёжной транзакции.")
         init_book()
         book_file = current_book_file()
         # Загружаем книгу из памяти, чтобы openpyxl/ZipFile не удерживал блокировку
@@ -863,6 +1183,8 @@ def add_receipt_to_book(client_name, amount, receipt_number, created_at, status=
             finally:
                 wb.close()
             os.replace(temp_book, book_file)
+            if transaction is not None:
+                transaction["book_changed"] = True
         finally:
             if os.path.exists(temp_book):
                 os.remove(temp_book)
@@ -906,6 +1228,9 @@ def _cleanup_payment_transaction(paths):
 
 def recover_payment_transaction():
     """Recover a payment interrupted between schedule.json and book.xlsx writes."""
+    if REMOTE_STORAGE:
+        # The Russian storage service recovers prepared commits before serving.
+        return False
     paths = payment_transaction_paths()
     marker_path = paths["marker"]
     with DATA_LOCK:
@@ -941,6 +1266,30 @@ def recover_payment_transaction():
 @contextmanager
 def payment_files_transaction():
     """Atomically coordinate schedule and book writes with crash recovery."""
+    if REMOTE_STORAGE:
+        with DATA_LOCK:
+            transaction = {"json": {}, "book_changed": False, "book_loaded": False}
+            token = PAYMENT_TRANSACTION.set(transaction)
+            try:
+                yield
+                if not transaction["json"]:
+                    raise RuntimeError("Платёжная транзакция не содержит JSON-изменений.")
+                binary = {}
+                if transaction["book_changed"]:
+                    book_file = current_book_file()
+                    with open(book_file, "rb") as source:
+                        binary[_remote_relative_path(book_file)] = source.read()
+                REMOTE_STORAGE.commit_payment_transaction(
+                    transaction["json"], binary,
+                    transaction_id="payment-" + uuid.uuid4().hex,
+                )
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Не удалось атомарно сохранить оплату ({exc})."
+                ) from exc
+            finally:
+                PAYMENT_TRANSACTION.reset(token)
+        return
     with DATA_LOCK:
         recover_payment_transaction()
         paths = payment_transaction_paths()
@@ -988,6 +1337,9 @@ async def send_receipt_document(chat_id, pdf_path, caption, filename=None):
 
 
 def send_receipt_from_flask(chat_id, pdf_path, caption, filename=None):
+    from telegram_transport import telegram_proxy_url
+    if telegram_proxy_url():
+        return False, "Отправка файлов в Telegram отключена при использовании прокси."
     if BOT_LOOP is None or BOT_APPLICATION is None:
         return False, "Telegram-бот ещё не готов к отправке."
     future = asyncio.run_coroutine_threadsafe(send_receipt_document(chat_id, pdf_path, caption, filename), BOT_LOOP)
@@ -1026,7 +1378,9 @@ def validate_init_data(init_data):
             return False, None
 
         auth_date = int(parsed.get("auth_date", "0"))
-        if auth_date <= 0 or abs(int(time.time()) - auth_date) > 86400:
+        now = int(time.time())
+        # Reject stale sessions and timestamps substantially in the future.
+        if auth_date <= 0 or auth_date > now + 30 or now - auth_date > INIT_DATA_MAX_AGE_SECONDS:
             return False, None
 
         data_check_string = "\n".join(f"{key}={parsed[key]}" for key in sorted(parsed))
@@ -1069,6 +1423,7 @@ def next_series_id():
 
 
 flask_app = Flask(__name__)
+flask_app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 CORS(
     flask_app,
     resources={r"/api/*": {"origins": [WEBAPP_ORIGIN]}},
@@ -1076,18 +1431,193 @@ CORS(
     methods=["GET", "POST", "OPTIONS"],
 )
 
+BOT3_FRONTEND_FILES = {
+    "app.js", "help.js", "i18n.js", "index.html", "personal_notifications.js",
+    "startup.js", "styles.css", "support.js", "ux.css", "ux.js",
+    "locales/en.js", "vendor/telegram-web-app.js",
+}
+PUBLIC_SITE_FILES = {
+    "landing.html", "marketing.css", "demo.html", "demo.css", "demo.js",
+    "terms.html", "privacy.html",
+}
+PUBLIC_SCREENSHOT_FILES = {
+    "temli-calendar.png", "temli-students.png", "temli-payments.png",
+}
+
+_RATE_LIMITS = {
+    "read": (_bounded_env_int("TEMLI_RATE_READ_PER_MINUTE", 180, 30, 1200), 60.0),
+    "write": (_bounded_env_int("TEMLI_RATE_WRITE_PER_MINUTE", 60, 10, 600), 60.0),
+    "export": (_bounded_env_int("TEMLI_RATE_EXPORT_PER_MINUTE", 10, 2, 60), 60.0),
+}
+_RATE_EXPORT_PATHS = {"/api/download_book", "/api/export_week_pdf", "/api/export_account_data"}
+_rate_lock = threading.Lock()
+_rate_windows = {}
+
+
+def _request_rate_class():
+    if request.path in _RATE_EXPORT_PATHS:
+        return "export"
+    return "read" if request.method in {"GET", "HEAD"} else "write"
+
+
+def _rate_limit_key(rate_class):
+    # Prefer the signed request's public hash. This keeps users separate behind
+    # Traefik without retaining the raw Telegram header or trusting spoofable
+    # forwarding headers. Invalid/missing payloads fall back to the peer IP.
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    try:
+        candidate = dict(parse_qsl(init_data, keep_blank_values=True)).get("hash", "")
+    except (TypeError, ValueError):
+        candidate = ""
+    source = candidate if re.fullmatch(r"[0-9a-fA-F]{64}", candidate or "") else (request.remote_addr or "unknown")
+    return rate_class, hashlib.sha256(source.encode("utf-8", "replace")).digest()[:12]
+
+
+def _rate_limit_exceeded(rate_class):
+    limit, window_seconds = _RATE_LIMITS[rate_class]
+    now = time.monotonic()
+    key = _rate_limit_key(rate_class)
+    with _rate_lock:
+        started, count = _rate_windows.get(key, (now, 0))
+        if now - started >= window_seconds:
+            started, count = now, 0
+        count += 1
+        _rate_windows[key] = (started, count)
+        # Opportunistic bounded cleanup protects a long-running process.
+        if len(_rate_windows) > 4096:
+            cutoff = now - window_seconds * 2
+            for stale_key, (stale_started, _stale_count) in list(_rate_windows.items()):
+                if stale_started < cutoff:
+                    _rate_windows.pop(stale_key, None)
+        return count > limit
+
+
+@flask_app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' "
+        "https://web.telegram.org https://*.telegram.org",
+    )
+    return response
+
+
+def send_bot3_frontend_file(filename):
+    filename = str(filename or "")
+    if filename not in BOT3_FRONTEND_FILES:
+        return jsonify({"status": "error", "message": "Файл не найден."}), 404
+    response = send_from_directory(CODE_DIR, filename, conditional=True)
+    if filename == "index.html":
+        response.headers["Cache-Control"] = "no-store"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def send_public_site_file(filename):
+    if filename not in PUBLIC_SITE_FILES:
+        return jsonify({"status": "error", "message": "Not found."}), 404
+    response = send_from_directory(CODE_DIR, filename, conditional=True)
+    response.headers["Cache-Control"] = "no-store" if filename.endswith(".html") else "public, max-age=300"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@flask_app.get("/")
+def public_landing():
+    return send_public_site_file("landing.html")
+
+
+@flask_app.get("/marketing.css")
+def public_marketing_styles():
+    return send_public_site_file("marketing.css")
+
+
+@flask_app.get("/demo/")
+def public_demo():
+    return send_public_site_file("demo.html")
+
+
+@flask_app.get("/demo.css")
+def public_demo_styles():
+    return send_public_site_file("demo.css")
+
+
+@flask_app.get("/demo.js")
+def public_demo_script():
+    return send_public_site_file("demo.js")
+
+
+@flask_app.get("/screenshots/<filename>")
+def public_screenshot(filename):
+    if filename not in PUBLIC_SCREENSHOT_FILES:
+        return jsonify({"status": "error", "message": "Not found."}), 404
+    response = send_from_directory(os.path.join(CODE_DIR, "marketing", "screenshots"), filename, conditional=True)
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@flask_app.get("/terms")
+def public_terms():
+    return send_public_site_file("terms.html")
+
+
+@flask_app.get("/privacy")
+def public_privacy():
+    return send_public_site_file("privacy.html")
+
+
+@flask_app.get("/open")
+def open_temli_bot():
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", BOT_USERNAME):
+        return redirect("/demo/", code=302)
+    return redirect(f"https://t.me/{BOT_USERNAME}?start=landing", code=302)
+
+
+@flask_app.get("/app/")
+def bot3_webapp():
+    return send_bot3_frontend_file("index.html")
+
+
+@flask_app.get("/app/<path:filename>")
+def bot3_webapp_asset(filename):
+    return send_bot3_frontend_file(filename)
+
 
 @flask_app.errorhandler(DataCorruptionError)
 def handle_data_corruption(error):
     return jsonify({"status": "error", "message": str(error)}), 503
 
 
+@flask_app.errorhandler(413)
+def handle_request_too_large(_error):
+    return jsonify({"status": "error", "message": "Запрос слишком большой."}), 413
+
+
 @flask_app.before_request
 def protect_api():
-    if request.method == "OPTIONS" or request.path == "/api/health":
+    if request.method == "OPTIONS" or request.path in {"/api/health", "/api/ready"}:
         return None
     if not request.path.startswith("/api/"):
         return None
+
+    if _rate_limit_exceeded(_request_rate_class()):
+        response = jsonify({"status": "error", "message": "Слишком много запросов. Повторите позже."})
+        response.headers["Retry-After"] = "60"
+        return response, 429
+
+    g.remote_cache_token = REMOTE_REQUEST_CACHE.set({})
 
     ok, user = validate_init_data(request.headers.get("X-Telegram-Init-Data", ""))
     if not ok:
@@ -1099,14 +1629,47 @@ def protect_api():
         teacher_id = str((user or {}).get("id", "")).strip()
     if not teacher_id:
         return jsonify({"status": "error", "message": "Не удалось определить преподавателя Telegram."}), 401
+    _prefetch_remote_json({
+        TENANT_REGISTRY_FILE: {},
+        os.path.join(BASE_DIR, "main_invite_visitors.json"): {},
+    })
     from invitation_channels import recipient_only
     if recipient_only(sys.modules[__name__], teacher_id):
         return jsonify(status='error', code='recipient_only'), 403
     ensure_teacher_registered(teacher_id, user or {})
-    TEACHER_CONTEXT.set(teacher_id)
+    g.teacher_context_token = TEACHER_CONTEXT.set(teacher_id)
     g.teacher_id = teacher_id
+    eligibility_paths = {"/api/eligibility/status", "/api/eligibility/accept"}
+    eligibility = teacher_eligibility_status(teacher_id)
+    if (ELIGIBILITY_ENFORCEMENT and not ALLOW_UNAUTHENTICATED
+            and request.path not in eligibility_paths and not eligibility["ready"]):
+        return jsonify({
+            "status": "error",
+            "code": "eligibility_required",
+            **eligibility,
+        }), 428
+    consent_paths = {"/api/consent/status", "/api/consent/accept", "/api/consent/revoke", *eligibility_paths}
+    if CONSENT_ENFORCEMENT and not ALLOW_UNAUTHENTICATED and request.path not in consent_paths:
+        try:
+            consent = current_consent_status()
+        except ConsentConfigurationError:
+            return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+        except ConsentLedgerError:
+            return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+        if not consent["ready"]:
+            return jsonify({"status": "error", "code": "consent_required", **consent}), 428
     recover_payment_transaction()
     return None
+
+
+@flask_app.teardown_request
+def clear_request_context(_error=None):
+    teacher_token = getattr(g, "teacher_context_token", None)
+    if teacher_token is not None:
+        TEACHER_CONTEXT.reset(teacher_token)
+    cache_token = getattr(g, "remote_cache_token", None)
+    if cache_token is not None:
+        REMOTE_REQUEST_CACHE.reset(cache_token)
 
 
 
@@ -1746,9 +2309,253 @@ def export_week_pdf():
                 pass
 
 
+def _json_export_bytes(value):
+    return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _redact_export_secrets(value):
+    """Defensively remove credential-shaped fields from portable exports."""
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_export_secrets(item)
+            for key, item in value.items()
+            if not re.search(r"token|secret|password|credential|api[_-]?key|encryption", str(key), re.I)
+        }
+    if isinstance(value, list):
+        return [_redact_export_secrets(item) for item in value]
+    return value
+
+
+@flask_app.route("/api/export_account_data", methods=["GET"])
+def export_account_data():
+    """Return a portable copy of the current tutor's TEMLI account data.
+
+    Credentials, encryption material and branded-bot tokens are deliberately
+    excluded. The archive is assembled in memory and is not retained by the
+    application server.
+    """
+    teacher_id = current_teacher_id()
+    registry = load_tenant_registry()
+    teacher = registry.get("teachers", {}).get(teacher_id, {})
+    if not isinstance(teacher, dict):
+        teacher = {}
+    public_teacher = {
+        key: teacher.get(key)
+        for key in ("id", "first_name", "last_name", "username", "eligibility")
+        if teacher.get(key) not in (None, "")
+    }
+    payloads = {
+        "account.json": {
+            "exported_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
+            "product": "TEMLI",
+            "teacher": public_teacher,
+        },
+        "settings.json": load_settings(),
+        "students.json": load_json(STUDENTS_FILE, {}),
+        "schedule.json": load_json(DATA_FILE, {}),
+        "payments.json": load_json(payments_file(), {}),
+    }
+    try:
+        consent = _load_json_raw(current_consent_ledger_file(), {})
+    except (OSError, RemoteStorageError):
+        consent = {}
+    if consent:
+        payloads["consent-history.json"] = consent
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+        for filename, value in payloads.items():
+            bundle.writestr(filename, _json_export_bytes(_redact_export_secrets(value)))
+        bundle.writestr(
+            "README.txt",
+            "TEMLI account export\n\n"
+            "This archive contains the live account data available to the signed-in tutor.\n"
+            "Bot tokens, encryption keys and other credentials are never included.\n",
+        )
+    archive.seek(0)
+    stamp = datetime.date.today().isoformat()
+    return send_file(
+        archive,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"temli-account-export-{stamp}.zip",
+        max_age=0,
+    )
+
+
+@flask_app.route("/api/request_account_deletion", methods=["POST"])
+def request_account_deletion():
+    """Record a verified deletion request without pretending backups vanished instantly."""
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict) or data.get("confirmation") != "DELETE TEMLI":
+        return jsonify({"status": "error", "code": "confirmation_required"}), 400
+    teacher_id = current_teacher_id()
+    path = project_path("account_deletion_requests.json")
+    with DATA_LOCK:
+        requests = _load_json_raw(path, {})
+        if not isinstance(requests, dict):
+            requests = {}
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        reference = "DEL-" + hashlib.sha256(f"{teacher_id}:{now}".encode()).hexdigest()[:10].upper()
+        requests[teacher_id] = {
+            "requested_at": now,
+            "reference": reference,
+            "status": "pending_verification",
+        }
+        _save_json_raw(path, requests)
+    return jsonify({"status": "ok", "reference": reference})
+
+
+def _requested_consent_documents():
+    payload = request.get_json(silent=True)
+    requested = payload.get("documents") if isinstance(payload, dict) else None
+    if not isinstance(requested, list) or not requested:
+        return None
+    normalized = list(dict.fromkeys(str(item) for item in requested))
+    return normalized if all(item in DOCUMENT_TYPES for item in normalized) else None
+
+
+@flask_app.route("/api/eligibility/status", methods=["GET"])
+def get_eligibility_status():
+    return jsonify({"status": "ok", **teacher_eligibility_status()})
+
+
+@flask_app.route("/api/eligibility/accept", methods=["POST"])
+def accept_eligibility():
+    try:
+        status = accept_teacher_eligibility(getattr(g, "teacher_id", ""), request.get_json(silent=True))
+    except ValueError as error:
+        return jsonify({"status": "error", "code": str(error)}), 400
+    return jsonify({"status": "ok", **status})
+
+
+@flask_app.route("/api/consent/status", methods=["GET"])
+def get_consent_status():
+    try:
+        return jsonify({"status": "ok", **current_consent_status()})
+    except ConsentConfigurationError:
+        return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+    except ConsentLedgerError:
+        return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+
+
+@flask_app.route("/api/consent/accept", methods=["POST"])
+def accept_current_documents():
+    requested = _requested_consent_documents()
+    if requested is None:
+        return jsonify({"status": "error", "code": "invalid_consent_documents"}), 400
+    try:
+        return jsonify({"status": "ok", **record_consent_action(requested, "accepted")})
+    except ConsentConfigurationError:
+        return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+    except ConsentLedgerError:
+        return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+
+
+@flask_app.route("/api/consent/revoke", methods=["POST"])
+def revoke_current_documents():
+    requested = _requested_consent_documents()
+    if requested is None:
+        return jsonify({"status": "error", "code": "invalid_consent_documents"}), 400
+    try:
+        return jsonify({"status": "ok", **record_consent_action(requested, "revoked")})
+    except ConsentConfigurationError:
+        return jsonify({"status": "error", "code": "consent_configuration_missing"}), 503
+    except ConsentLedgerError:
+        return jsonify({"status": "error", "code": "consent_ledger_invalid"}), 503
+
+
 @flask_app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "API работает"})
+    return jsonify({
+        "status": "ok",
+        "message": "API работает",
+        "release": BOT3_RELEASE_ID,
+        "telegram": telegram_diagnostic_snapshot(),
+        "storage": "remote-json-test" if REMOTE_STORAGE else "local",
+        "capabilities": ["request-json-cache-v1", "bootstrap-v1",
+                         "storage-http-pool-v1",
+                         "self-hosted-frontend-v1", "readiness-v1",
+                         "release-id-v1"],
+    })
+
+
+def telegram_diagnostic_snapshot():
+    snapshot = (TELEGRAM_DIAGNOSTICS.snapshot() if TELEGRAM_DIAGNOSTICS
+                else {"start_stage": "not_received", "requests": {}})
+    application = BOT_APPLICATION
+    snapshot["initialized"] = application is not None
+    snapshot["application_running"] = bool(application and application.running)
+    snapshot["polling_running"] = bool(application and application.updater and application.updater.running)
+    return snapshot
+
+
+def trace_start(stage):
+    if TELEGRAM_DIAGNOSTICS:
+        TELEGRAM_DIAGNOSTICS.stage(stage)
+
+
+@flask_app.route("/api/ready", methods=["GET"])
+def ready():
+    """Cached dependency check suitable for an external uptime monitor."""
+    now = time.monotonic()
+    with READINESS_LOCK:
+        if READINESS_CACHE["payload"] is not None and now < READINESS_CACHE["expires_at"]:
+            return jsonify(READINESS_CACHE["payload"]), READINESS_CACHE["status_code"]
+        started = time.monotonic()
+        try:
+            if REMOTE_STORAGE:
+                remote = REMOTE_STORAGE.status()
+                backup = remote["backup"]
+                if backup.get("latest_verified") is not True:
+                    raise ValueError("latest backup is not verified")
+                replica = None
+                replica_dir = os.getenv("TEMLI_REPLICA_DIR", "").strip()
+                if replica_dir:
+                    from backup_replica import configured_replica_dir, replica_status
+                    resolved_replica_dir = configured_replica_dir()
+                    replica = replica_status(resolved_replica_dir)
+                    if (replica["count"] < 1
+                            or replica["latest_age_seconds"] is None
+                            or replica["latest_age_seconds"] > 8 * 60 * 60):
+                        raise ValueError("offsite backup replica is stale")
+                payload = {
+                    "status": "ok",
+                    "service": "temli-bot3",
+                    "storage": "ok",
+                    "storage_latency_ms": round((time.monotonic() - started) * 1000),
+                    "backup_count": int(backup.get("count", 0) or 0),
+                    "latest_backup_age_seconds": backup.get("latest_age_seconds"),
+                    "latest_backup_verified": True,
+                    "replica_enabled": replica is not None,
+                    "replica_count": replica["count"] if replica else None,
+                    "latest_replica_age_seconds": (
+                        replica["latest_age_seconds"] if replica else None
+                    ),
+                }
+            else:
+                payload = {
+                    "status": "ok", "service": "temli-bot3",
+                    "storage": "local", "storage_latency_ms": 0,
+                    "backup_count": None, "latest_backup_age_seconds": None,
+                    "latest_backup_verified": None,
+                    "replica_enabled": False,
+                    "replica_count": None,
+                    "latest_replica_age_seconds": None,
+                }
+            status_code = 200
+        except (RemoteStorageError, TypeError, ValueError):
+            payload = {
+                "status": "error", "service": "temli-bot3",
+                "storage": "unavailable",
+            }
+            status_code = 503
+        READINESS_CACHE.update({
+            "expires_at": now + 30.0,
+            "status_code": status_code,
+            "payload": payload,
+        })
+        return jsonify(payload), status_code
 
 
 @flask_app.route("/api/get_week_schedule", methods=["POST"])
@@ -1773,8 +2580,46 @@ def get_week_schedule():
     return jsonify({"status": "ok", "schedule": week_data})
 
 
+@flask_app.route("/api/bootstrap", methods=["POST"])
+def bootstrap():
+    """Return the initial calendar state without three separate API calls."""
+    data = request.get_json() or {}
+    week_start = data.get("week_start")
+    if not week_start:
+        today = datetime.date.today()
+        week_start = (today - datetime.timedelta(days=today.weekday())).strftime("%Y-%m-%d")
+    try:
+        start_date = datetime.datetime.strptime(week_start, "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"status": "error", "message": "Некорректная дата начала недели."}), 400
+
+    _prefetch_remote_json({
+        tenant_file(DATA_FILE): {},
+        tenant_file(STUDENTS_FILE): {},
+        tenant_file(SETTINGS_FILE): {},
+    })
+    schedule = load_json(DATA_FILE)
+    students = prepare_students()
+    settings = load_settings()
+    week_data = {}
+    for i in range(7):
+        key = (start_date + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        week_data[key] = sorted(schedule.get(key, []), key=lambda item: item.get("time", "00:00"))
+    has_students = any(str(student_id) != current_teacher_id() for student_id in students)
+    has_lessons = any(bool(lessons) for lessons in schedule.values())
+    onboarding_needed = not settings.get("onboarding_completed") and not has_students and not has_lessons
+    return jsonify({
+        "status": "ok", "schedule": week_data, "students": students,
+        "settings": settings, "onboarding_needed": onboarding_needed,
+    })
+
+
 @flask_app.route("/api/get_students", methods=["GET"])
 def get_students():
+    return jsonify({"status": "ok", "students": prepare_students()})
+
+
+def prepare_students():
     students = load_json(STUDENTS_FILE)
     changed = False
     teacher_id = str(getattr(g, "teacher_id", "") or "").strip()
@@ -1802,7 +2647,7 @@ def get_students():
                 changed = True
     if changed:
         save_json(STUDENTS_FILE, students)
-    return jsonify({"status": "ok", "students": students})
+    return students
 
 
 @flask_app.route("/api/get_settings", methods=["GET"])
@@ -1827,7 +2672,7 @@ def update_settings():
 @serialized_data
 def update_settings_data(data):
     settings = load_settings()
-    boolean_keys = {"default_reminders_enabled", "default_student_reminders", "default_send_receipts", "default_send_receipt_copy", "onboarding_completed", "parent_lesson_end"}
+    boolean_keys = {"default_reminders_enabled", "default_student_reminders", "default_send_receipts", "default_send_receipt_copy", "onboarding_completed", "parent_lesson_end", "teacher_block_reminders"}
     notification_template_keys = {
         "student_binding_template", "parent_binding_template",
         "student_reminder_template", "parent_lesson_end_template",
@@ -1885,6 +2730,45 @@ def update_settings_data(data):
     return jsonify({"status": "ok", "settings": settings})
 
 
+def normalize_uploaded_image(raw):
+    """Decode an uploaded raster image and return safe, metadata-free bytes."""
+    if not raw:
+        raise ValueError("Пустой файл изображения.")
+    try:
+        with Image.open(io.BytesIO(raw)) as probe:
+            actual_format = str(probe.format or "").upper()
+            if actual_format not in {"PNG", "JPEG"}:
+                raise ValueError("Разрешены только изображения PNG и JPEG.")
+            width, height = probe.size
+            if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                raise ValueError("Слишком большое разрешение изображения.")
+            probe.verify()
+
+        with Image.open(io.BytesIO(raw)) as decoded:
+            decoded.load()
+            image = ImageOps.exif_transpose(decoded)
+            output = io.BytesIO()
+            has_alpha = image.mode in {"RGBA", "LA"} or (
+                image.mode == "P" and "transparency" in image.info
+            )
+            if actual_format == "PNG" or has_alpha:
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if has_alpha else "RGB")
+                image.save(output, format="PNG", optimize=True)
+                extension = ".png"
+            else:
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                image.save(output, format="JPEG", quality=90, optimize=True)
+                extension = ".jpg"
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("Файл не является корректным изображением PNG или JPEG.") from exc
+    normalized = output.getvalue()
+    if len(normalized) > 5 * 1024 * 1024:
+        raise ValueError("Изображение после обработки больше 5 МБ.")
+    return extension, normalized
+
+
 @flask_app.route("/api/upload_receipt_asset", methods=["POST"])
 def upload_receipt_asset():
     asset_type = str(request.form.get("asset_type", "")).strip()
@@ -1904,9 +2788,10 @@ def upload_receipt_asset():
     if len(raw) > 5 * 1024 * 1024:
         return jsonify({"status": "error", "message": "Файл больше 5 МБ."}), 400
 
-    ext = os.path.splitext(uploaded.filename)[1].lower()
-    if ext not in {".png", ".jpg", ".jpeg"}:
-        return jsonify({"status": "error", "message": "Разрешены PNG, JPG и JPEG."}), 400
+    try:
+        ext, raw = normalize_uploaded_image(raw)
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
 
     return save_receipt_asset(asset_type, ext, raw, mapping[asset_type])
 
@@ -1917,23 +2802,46 @@ def save_receipt_asset(asset_type, ext, raw, setting_key):
     os.makedirs(current_receipt_assets_dir(), exist_ok=True)
     filename = f"{asset_type}{ext}"
     destination = os.path.join(current_receipt_assets_dir(), filename)
-    fd, temporary = tempfile.mkstemp(prefix="asset_", suffix=".tmp", dir=current_receipt_assets_dir())
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(raw)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temporary, destination)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
+    if REMOTE_STORAGE:
+        relative = _remote_relative_path(destination)
+        try:
+            previous = REMOTE_STORAGE.read_file(relative)
+            REMOTE_STORAGE.write_file(relative, raw)
+            try:
+                settings = load_settings()
+                settings[setting_key] = filename
+                save_json(SETTINGS_FILE, settings)
+            except BaseException:
+                if previous is None:
+                    REMOTE_STORAGE.delete_file(relative)
+                else:
+                    REMOTE_STORAGE.write_file(relative, previous)
+                raise
+            _atomic_local_bytes(destination, raw)
+        except RemoteStorageError as exc:
+            raise DataCorruptionError(
+                f"Не удалось записать файл в удалённое хранилище ({exc})."
+            ) from exc
+    else:
+        _atomic_local_bytes(destination, raw)
+        settings = load_settings()
+        settings[setting_key] = filename
+        save_json(SETTINGS_FILE, settings)
 
-    settings = load_settings()
-    settings[setting_key] = filename
-    save_json(SETTINGS_FILE, settings)
     for old_ext in (".png", ".jpg", ".jpeg"):
         old_path = os.path.join(current_receipt_assets_dir(), f"{asset_type}{old_ext}")
-        if old_path != destination and os.path.exists(old_path):
+        if old_path == destination:
+            continue
+        if REMOTE_STORAGE:
+            try:
+                old_relative = _remote_relative_path(old_path)
+                if REMOTE_STORAGE.read_file(old_relative) is not None:
+                    REMOTE_STORAGE.delete_file(old_relative)
+            except RemoteStorageError as exc:
+                raise DataCorruptionError(
+                    f"Файл сохранён, но старую версию удалить не удалось ({exc})."
+                ) from exc
+        if os.path.exists(old_path):
             os.remove(old_path)
     return jsonify({"status": "ok", "settings": settings, "filename": filename})
 
@@ -2493,6 +3401,7 @@ def pay_subscription():
         if requested_lesson_count < 2:
             return jsonify({"status": "error", "message": "Для абонемента укажите минимум 2 занятия."}), 400
 
+    _prefetch_payment_json("schedule", "students", "settings")
     with DATA_LOCK:
         schedule = load_json(DATA_FILE)
         students = load_json(STUDENTS_FILE)
@@ -2599,11 +3508,7 @@ def pay_subscription():
     messages = []
     try:
         if send_receipt:
-            if parent_chat_id is None:
-                messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
-            else:
-                ok, error = send_receipt_from_flask(parent_chat_id, receipt_path, f"Чек за абонемент: {lesson_count} занятий · {amount:.2f} руб. · № {receipt_number}")
-                messages.append("Чек отправлен родителю." if ok else f"Родителю чек отправить не удалось: {error}")
+            messages.append("Родителю чек не отправлен: отправка через общий TEMLI-бот запрещена. Поддержка файлов брендированного бота будет добавлена отдельно.")
         else:
             messages.append("Родителю чек не отправлялся.")
         if send_teacher_copy:
@@ -2633,6 +3538,7 @@ def mark_paid():
     paid = bool(data.get("paid", True))
     send_receipt = bool(data.get("send_receipt", True))
 
+    _prefetch_payment_json("schedule", "students", "settings")
     with DATA_LOCK:
         schedule = load_json(DATA_FILE)
         lesson = None
@@ -2891,11 +3797,7 @@ def mark_paid():
         for job in receipt_jobs:
             try:
                 if send_receipt:
-                    if job["parent_chat_id"] is None:
-                        failed_names.append(job["name"])
-                    else:
-                        ok, _error = send_receipt_from_flask(job["parent_chat_id"], job["path"], job["parent_caption"])
-                        (sent_names if ok else failed_names).append(job["name"])
+                    failed_names.append(job["name"])
 
                 if send_teacher_copy:
                     if teacher_chat_id is None:
@@ -2938,15 +3840,7 @@ def mark_paid():
     messages = []
     try:
         if send_receipt:
-            student_info = get_student_record(load_json(STUDENTS_FILE), lesson.get("student_id"))
-            contacts = student_info.get("contacts") or lesson.get("contacts") or {}
-            chat_id = numeric_telegram_chat_id(contacts.get("tg") if isinstance(contacts, dict) else "")
-            if chat_id is None:
-                messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
-            else:
-                caption = f"Чек об оплате занятия с {lesson.get('student', 'учеником')} на {amount:.2f} руб. № {receipt_number}"
-                receipt_sent, error = send_receipt_from_flask(chat_id, receipt_path, caption)
-                messages.append("Чек отправлен родителю." if receipt_sent else f"Родителю чек отправить не удалось: {error}")
+            messages.append("Родителю чек не отправлен: отправка через общий TEMLI-бот запрещена. Поддержка файлов брендированного бота будет добавлена отдельно.")
         else:
             messages.append("Родителю чек не отправлялся.")
 
@@ -3068,6 +3962,7 @@ def get_student_payments():
     student_id = str((request.get_json() or {}).get("student_id", "")).strip()
     if not student_id:
         return jsonify({"status": "error", "message": "Не указан ученик."}), 400
+    _prefetch_payment_json("schedule", "payments")
     with DATA_LOCK:
         recover_payment_transaction()
         schedule = load_json(DATA_FILE)
@@ -3097,6 +3992,7 @@ def reverse_student_payment():
     data = request.get_json() or {}
     student_id = str(data.get("student_id", "")).strip()
     transaction_id = str(data.get("transaction_id", ""))
+    _prefetch_payment_json("schedule", "students", "payments")
     with DATA_LOCK:
         recover_payment_transaction()
         history = load_json(payments_file(), {})
@@ -3180,6 +4076,7 @@ def student_payment_quote(candidates, student_id, count):
 @flask_app.route("/api/get_student_payment_options", methods=["POST"])
 def get_student_payment_options():
     student_id = str((request.get_json() or {}).get("student_id", "")).strip()
+    _prefetch_payment_json("schedule", "students")
     with DATA_LOCK:
         recover_payment_transaction()
         students = load_json(STUDENTS_FILE)
@@ -3225,6 +4122,7 @@ def apply_student_payment():
         "send_receipt": send_receipt,
     }
 
+    _prefetch_payment_json("schedule", "students", "settings", "payments")
     with DATA_LOCK:
         recover_payment_transaction()
         schedule = load_json(DATA_FILE)
@@ -3336,11 +4234,7 @@ def apply_student_payment():
     try:
         if receipt_path:
             if send_receipt:
-                if parent_chat_id is None:
-                    messages.append("Родителю чек не отправлен: нет числового Telegram ID.")
-                else:
-                    ok, error = send_receipt_from_flask(parent_chat_id, receipt_path, f"Чек: оплата занятий · {distributed:.2f} руб. · № {receipt_number}")
-                    messages.append("Чек отправлен родителю." if ok else f"Родителю чек отправить не удалось: {error}")
+                messages.append("Родителю чек не отправлен: отправка через общий TEMLI-бот запрещена. Поддержка файлов брендированного бота будет добавлена отдельно.")
             if settings.get("default_send_receipt_copy", True):
                 if teacher_chat_id is not None:
                     ok, error = send_receipt_from_flask(teacher_chat_id, receipt_path, f"Копия чека: оплата занятий · {distributed:.2f} руб. · № {receipt_number}")
@@ -3514,10 +4408,55 @@ async def reminder_worker(application: Application):
         await asyncio.sleep(60)
 
 
+async def configure_bot_profile(application: Application):
+    """Publish a polished English-first Telegram profile and Russian locale."""
+    default_commands = [
+        BotCommand("start", "Open TEMLI"),
+        BotCommand("support", "Get help"),
+        BotCommand("privacy", "Privacy notice"),
+        BotCommand("terms", "Terms of Service"),
+        BotCommand("paysupport", "Payment support"),
+    ]
+    russian_commands = [
+        BotCommand("start", "Открыть TEMLI"),
+        BotCommand("support", "Получить помощь"),
+        BotCommand("privacy", "Конфиденциальность"),
+        BotCommand("terms", "Условия использования"),
+        BotCommand("paysupport", "Помощь с оплатой"),
+    ]
+    try:
+        await application.bot.set_my_name("TEMLI")
+        await application.bot.set_my_short_description(
+            "Plan lessons, track payments, and keep every student detail in one place."
+        )
+        await application.bot.set_my_description(
+            "A calm Telegram workspace for independent tutors. Plan individual and group lessons, "
+            "track payments, keep student details together, and send optional reminders through "
+            "your own branded bot. For adult independent tutors."
+        )
+        await application.bot.set_my_commands(default_commands)
+        await application.bot.set_my_short_description(
+            "Расписание, оплаты и данные учеников — в одном рабочем пространстве.",
+            language_code="ru",
+        )
+        await application.bot.set_my_description(
+            "Рабочее пространство частного преподавателя в Telegram: индивидуальные и групповые "
+            "занятия, учёт оплат, карточки учеников и уведомления через собственного брендированного бота.",
+            language_code="ru",
+        )
+        await application.bot.set_my_commands(russian_commands, language_code="ru")
+        print("TEMLI Telegram profile: English default and Russian locale configured", flush=True)
+    except Exception as error:
+        # Profile synchronization is useful but must never stop the bot itself.
+        print(f"TEMLI Telegram profile: deferred ({type(error).__name__})", flush=True)
+
+
 async def post_init(application: Application):
-    global BOT_APPLICATION, BOT_LOOP, REMINDER_TASK
+    global BOT_APPLICATION, BOT_LOOP, REMINDER_TASK, PROFILE_TASK
     BOT_APPLICATION = application
     BOT_LOOP = asyncio.get_running_loop()
+    print("TEMLI Telegram: initialized", flush=True)
+    PROFILE_TASK = asyncio.create_task(configure_bot_profile(application), name="telegram-profile-sync")
     # post_init выполняется до перехода Application в running-state, поэтому
     # Application.create_task() здесь создаёт предупреждение PTB. Храним обычную
     # asyncio-задачу и явно завершаем её в post_stop.
@@ -3525,7 +4464,7 @@ async def post_init(application: Application):
 
 
 async def post_stop(application: Application):
-    global REMINDER_TASK, BOT_APPLICATION, BOT_LOOP
+    global REMINDER_TASK, PROFILE_TASK, BOT_APPLICATION, BOT_LOOP
     task = REMINDER_TASK
     REMINDER_TASK = None
     if task is not None and not task.done():
@@ -3534,11 +4473,74 @@ async def post_stop(application: Application):
             await task
         except asyncio.CancelledError:
             pass
+    profile_task = PROFILE_TASK
+    PROFILE_TASK = None
+    if profile_task is not None and not profile_task.done():
+        profile_task.cancel()
+        try:
+            await profile_task
+        except asyncio.CancelledError:
+            pass
     BOT_APPLICATION = None
     BOT_LOOP = None
 
 
+async def reply_text_with_retry(message, text, **kwargs):
+    """Retry transient BotHost-to-Telegram connection failures."""
+    for attempt in range(3):
+        try:
+            trace_start("sending_reply")
+            result = await message.reply_text(text, **kwargs)
+            trace_start("reply_sent")
+            return result
+        except (TimedOut, NetworkError):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(1.5 * (attempt + 1))
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    trace_start("received")
+    try:
+        await handle_start(update, context)
+    except Exception as error:
+        trace_start("error_" + type(error).__name__)
+        raise
+
+
+def _command_uses_russian(update):
+    return str(getattr(update.effective_user, "language_code", "") or "").lower().startswith("ru")
+
+
+async def support_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "Поддержка TEMLI: 46rus@mail.ru\n\nОпишите проблему и приложите скриншот. Никогда не отправляйте токен бота."
+        if _command_uses_russian(update)
+        else "TEMLI support: 46rus@mail.ru\n\nDescribe the issue and attach a screenshot. Never send your bot token."
+    )
+    await reply_text_with_retry(update.message, text)
+
+
+async def privacy_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    label = "Уведомление о конфиденциальности" if _command_uses_russian(update) else "Privacy notice"
+    await reply_text_with_retry(update.message, f"{label}: {PUBLIC_SITE_URL}/privacy")
+
+
+async def terms_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    label = "Условия использования" if _command_uses_russian(update) else "Terms of Service"
+    await reply_text_with_retry(update.message, f"{label}: {PUBLIC_SITE_URL}/terms")
+
+
+async def payment_support_command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "Платная подписка TEMLI пока не запущена. Если у вас появился вопрос о списании, напишите: 46rus@mail.ru"
+        if _command_uses_russian(update)
+        else "Paid TEMLI subscriptions are not live yet. If you have a billing question, email 46rus@mail.ru"
+    )
+    await reply_text_with_retry(update.message, text)
+
+
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     from invitation_channels import accept_main, recipient_only
     raw = context.args[0] if context.args else ''
@@ -3546,12 +4548,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = await asyncio.to_thread(accept_main, sys.modules[__name__], raw, u.to_dict(),
                                         update.effective_chat.to_dict(), update.update_id)
         if reply:
-            await update.message.reply_text(reply)
+            await reply_text_with_retry(update.message, reply)
         return
+    trace_start("checking_recipient")
     if recipient_only(sys.modules[__name__], str(u.id)):
-        await update.message.reply_text('Здесь будут сообщения о занятиях. Для подключения к другому преподавателю откройте его приглашение.')
+        await reply_text_with_retry(update.message, 'Здесь будут сообщения о занятиях. Для подключения к другому преподавателю откройте его приглашение.')
         return
     # Ordinary entry registers a teacher; invitation visitors were handled above.
+    trace_start("registering_teacher")
     ensure_teacher_registered(str(u.id), {
         "id": str(u.id),
         "first_name": u.first_name or "",
@@ -3559,14 +4563,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "username": u.username or "",
     })
 
+    trace_start("loading_settings")
     with teacher_scope(str(u.id)):
-        language = load_settings().get("language", "ru")
-    ready_text = "TEMLI is ready." if language == "en" else "TEMLI готов к работе."
+        language = load_settings().get("language", "en")
+    ready_text = ("TEMLI is ready for adult independent tutors."
+                  if language == "en" else "TEMLI готов к работе для совершеннолетних частных преподавателей.")
     open_text = "Open TEMLI" if language == "en" else "Открыть TEMLI"
-    await update.message.reply_text(
+    await reply_text_with_retry(
+        update.message,
         ready_text,
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(open_text, web_app=WebAppInfo(url=WEBAPP_URL))
+            InlineKeyboardButton(open_text, web_app=WebAppInfo(url=versioned_webapp_url()))
         ]]),
     )
 

@@ -5,16 +5,21 @@ import hashlib
 import base64
 import binascii
 import hmac
+import io
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from flask import Flask, jsonify, request, send_file
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from persistent_storage import READY_FILE
 
 
@@ -25,6 +30,8 @@ BINARY_SUFFIXES = {'.xlsx', '.pdf', '.png', '.jpg', '.jpeg'}
 MAX_BACKUP_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
 BACKUP_NAME_RE = re.compile(r"^temli-\d{8}T\d{6}(?:\d{6})?Z-[a-z0-9-]{1,32}\.zip$")
 PAYMENT_TRANSACTION_RE = re.compile(r'^[A-Za-z0-9_-]{16,80}$')
+BACKUP_ENVELOPE_MAGIC = b"TEMLIBK1"
+BACKUP_NONCE_BYTES = 12
 
 
 class StorageServiceError(RuntimeError):
@@ -266,6 +273,86 @@ def _backup_path(directory, raw_name):
     return path
 
 
+def backup_encryption_settings(environ=None):
+    """Return the mandatory production backup key and migration policy.
+
+    The key is URL-safe base64 for exactly 32 random bytes. Plain ZIP reading is
+    opt-in so a forgotten migration switch cannot silently weaken new installs.
+    """
+    environ = os.environ if environ is None else environ
+    encoded = str(environ.get("TEMLI_BACKUP_ENCRYPTION_KEY", "") or "").strip()
+    if not encoded:
+        raise StorageServiceError("Set TEMLI_BACKUP_ENCRYPTION_KEY")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}=?", encoded):
+        raise StorageServiceError(
+            "TEMLI_BACKUP_ENCRYPTION_KEY must be URL-safe base64 for 32 random bytes"
+        )
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        key = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except (UnicodeEncodeError, binascii.Error, ValueError):
+        raise StorageServiceError(
+            "TEMLI_BACKUP_ENCRYPTION_KEY must be URL-safe base64 for 32 random bytes"
+        ) from None
+    if len(key) != 32 or len(encoded.rstrip("=")) != 43:
+        raise StorageServiceError(
+            "TEMLI_BACKUP_ENCRYPTION_KEY must be URL-safe base64 for 32 random bytes"
+        )
+    allow_plaintext = str(
+        environ.get("TEMLI_ALLOW_PLAINTEXT_BACKUPS", "false") or "false"
+    ).strip().lower()
+    if allow_plaintext not in {"true", "false"}:
+        raise StorageServiceError("TEMLI_ALLOW_PLAINTEXT_BACKUPS must be true or false")
+    return key, allow_plaintext == "true"
+
+
+def _encrypt_backup(raw, key, name):
+    nonce = secrets.token_bytes(BACKUP_NONCE_BYTES)
+    return BACKUP_ENVELOPE_MAGIC + nonce + AESGCM(key).encrypt(
+        nonce, raw, name.encode("utf-8"))
+
+
+def _backup_zip_bytes(path, encryption_key=None, allow_plaintext=False):
+    raw = Path(path).read_bytes()
+    if raw.startswith(BACKUP_ENVELOPE_MAGIC):
+        if encryption_key is None:
+            raise StorageServiceError("backup_encryption_key_required")
+        minimum = len(BACKUP_ENVELOPE_MAGIC) + BACKUP_NONCE_BYTES + 16
+        if len(raw) < minimum:
+            raise StorageServiceError("invalid_backup")
+        nonce = raw[len(BACKUP_ENVELOPE_MAGIC):minimum - 16]
+        ciphertext = raw[len(BACKUP_ENVELOPE_MAGIC) + BACKUP_NONCE_BYTES:]
+        try:
+            return AESGCM(encryption_key).decrypt(
+                nonce, ciphertext, Path(path).name.encode("utf-8"))
+        except (InvalidTag, ValueError):
+            raise StorageServiceError("invalid_backup") from None
+    if encryption_key is not None and not allow_plaintext:
+        raise StorageServiceError("plaintext_backup_disabled")
+    return raw
+
+
+def migrate_plaintext_backups(directory, encryption_key):
+    """Atomically encrypt verified legacy ZIPs; encrypted files are untouched."""
+    directory = Path(directory).resolve()
+    migrated = 0
+    if not directory.is_dir():
+        return migrated
+    for path in sorted(directory.glob("temli-*.zip")):
+        if not BACKUP_NAME_RE.fullmatch(path.name):
+            continue
+        raw = path.read_bytes()
+        if raw.startswith(BACKUP_ENVELOPE_MAGIC):
+            inspect_backup(path, encryption_key=encryption_key)
+            continue
+        # Validate the complete legacy archive before replacing it.
+        inspect_backup(path)
+        _atomic_bytes(path, _encrypt_backup(raw, encryption_key, path.name))
+        inspect_backup(path, encryption_key=encryption_key)
+        migrated += 1
+    return migrated
+
+
 def _snapshot_files(root):
     root = Path(root).resolve()
     files = []
@@ -309,7 +396,8 @@ def prune_backups(directory, retention):
         stale.unlink()
 
 
-def create_backup(root, directory, *, reason="manual", retention=30):
+def create_backup(root, directory, *, reason="manual", retention=30,
+                  encryption_key=None):
     root = Path(root).resolve()
     directory = Path(directory).resolve()
     reason = re.sub(r"[^a-z0-9-]+", "-", str(reason).lower()).strip("-") or "manual"
@@ -335,6 +423,9 @@ def create_backup(root, directory, *, reason="manual", retention=30):
             archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             for relative, raw in files:
                 archive.writestr("data/" + relative, raw)
+        if encryption_key is not None:
+            encrypted = _encrypt_backup(Path(temporary).read_bytes(), encryption_key, name)
+            _atomic_bytes(Path(temporary), encrypted)
         os.replace(temporary, target)
     finally:
         if os.path.exists(temporary):
@@ -343,12 +434,13 @@ def create_backup(root, directory, *, reason="manual", retention=30):
     return target, manifest
 
 
-def inspect_backup(path):
+def inspect_backup(path, *, encryption_key=None, allow_plaintext=False):
     path = Path(path).resolve()
     if not path.is_file():
         raise StorageServiceError("backup_not_found")
     try:
-        with zipfile.ZipFile(path, "r") as archive:
+        raw_archive = _backup_zip_bytes(path, encryption_key, allow_plaintext)
+        with zipfile.ZipFile(io.BytesIO(raw_archive), "r") as archive:
             infos = archive.infolist()
             names = [info.filename for info in infos]
             if len(names) != len(set(names)) or "manifest.json" not in names:
@@ -394,9 +486,12 @@ def inspect_backup(path):
     return manifest, payload
 
 
-def restore_backup(root, archive_path, directory, *, retention=30):
+def restore_backup(root, archive_path, directory, *, retention=30,
+                   encryption_key=None, allow_plaintext=False):
     root = Path(root).resolve()
-    manifest, payload = inspect_backup(archive_path)
+    manifest, payload = inspect_backup(
+        archive_path, encryption_key=encryption_key,
+        allow_plaintext=allow_plaintext)
     marker = json.loads(payload[READY_FILE].decode("utf-8"))
     if not isinstance(marker, dict):
         raise StorageServiceError('invalid_backup_marker')
@@ -408,7 +503,9 @@ def restore_backup(root, archive_path, directory, *, retention=30):
             or not set(required).issubset(payload)):
         raise StorageServiceError("invalid_backup_marker")
     destinations = {relative: _archive_data_path(root, relative) for relative in payload}
-    safety_path, _ = create_backup(root, directory, reason="pre-restore", retention=retention)
+    safety_path, _ = create_backup(
+        root, directory, reason="pre-restore", retention=retention,
+        encryption_key=encryption_key)
     for relative, raw in payload.items():
         destination = destinations[relative]
         if destination.exists():
@@ -418,7 +515,7 @@ def restore_backup(root, archive_path, directory, *, retention=30):
     return manifest, safety_path
 
 
-def list_backups(directory):
+def list_backups(directory, *, encryption_key=None, allow_plaintext=False):
     directory = Path(directory).resolve()
     result = []
     if not directory.is_dir():
@@ -427,7 +524,9 @@ def list_backups(directory):
         if not BACKUP_NAME_RE.fullmatch(path.name):
             continue
         try:
-            manifest, _ = inspect_backup(path)
+            manifest, _ = inspect_backup(
+                path, encryption_key=encryption_key,
+                allow_plaintext=allow_plaintext)
             result.append({
                 "name": path.name,
                 "size": path.stat().st_size,
@@ -441,14 +540,17 @@ def list_backups(directory):
     return result
 
 
-def start_backup_worker(root, directory, lock, *, interval, retention):
+def start_backup_worker(root, directory, lock, *, interval, retention,
+                        encryption_key=None):
     stop = threading.Event()
 
     def run():
         while not stop.wait(interval):
             try:
                 with lock:
-                    create_backup(root, directory, reason="automatic", retention=retention)
+                    create_backup(
+                        root, directory, reason="automatic", retention=retention,
+                        encryption_key=encryption_key)
             except Exception as error:
                 print("TEMLI automatic backup failed: " + type(error).__name__, flush=True)
 
@@ -457,11 +559,50 @@ def start_backup_worker(root, directory, lock, *, interval, retention):
     return stop, thread
 
 
-def create_app(root, token, *, initialize=False, backups=None, backup_retention=30):
+def _validated_token(value, variable):
+    value = str(value or "")
+    if len(value) < 32:
+        raise StorageServiceError(variable + " must contain at least 32 characters")
+    return value
+
+
+def configured_storage_tokens(environ=None):
+    """Resolve scoped credentials, temporarily falling back to the legacy token.
+
+    TEMLI_STORAGE_APP_TOKEN authorizes application reads/writes and backup
+    creation; TEMLI_STORAGE_BACKUP_READ_TOKEN only lists/downloads backups;
+    TEMLI_STORAGE_ADMIN_TOKEN only requests and applies restore challenges.
+    TEMLI_STORAGE_TOKEN remains a migration fallback and should be removed once
+    all three scoped variables have been deployed.
+    """
+    environ = os.environ if environ is None else environ
+    legacy = str(environ.get("TEMLI_STORAGE_TOKEN", "") or "")
+    values = {
+        "app": str(environ.get("TEMLI_STORAGE_APP_TOKEN", "") or legacy),
+        "backup_read": str(environ.get("TEMLI_STORAGE_BACKUP_READ_TOKEN", "") or legacy),
+        "admin": str(environ.get("TEMLI_STORAGE_ADMIN_TOKEN", "") or legacy),
+    }
+    variables = {
+        "app": "TEMLI_STORAGE_APP_TOKEN",
+        "backup_read": "TEMLI_STORAGE_BACKUP_READ_TOKEN",
+        "admin": "TEMLI_STORAGE_ADMIN_TOKEN",
+    }
+    return {scope: _validated_token(value, variables[scope])
+            for scope, value in values.items()}
+
+
+def create_app(root, token=None, *, app_token=None, backup_read_token=None,
+               admin_token=None, initialize=False, backups=None,
+               backup_retention=30, backup_encryption_key=None,
+               allow_plaintext_backups=False):
     root = Path(root).resolve()
-    token = str(token or "")
-    if len(token) < 32:
-        raise StorageServiceError("TEMLI_STORAGE_TOKEN must contain at least 32 characters")
+    # Passing ``token`` keeps old deployments and callers working. Explicit
+    # scoped credentials take precedence and never get returned in responses.
+    legacy = str(token or "")
+    app_token = _validated_token(app_token or legacy, "TEMLI_STORAGE_APP_TOKEN")
+    backup_read_token = _validated_token(
+        backup_read_token or legacy, "TEMLI_STORAGE_BACKUP_READ_TOKEN")
+    admin_token = _validated_token(admin_token or legacy, "TEMLI_STORAGE_ADMIN_TOKEN")
     if initialize and not (root / READY_FILE).exists():
         initialize_empty(root)
     validate_root(root)
@@ -475,13 +616,31 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     app.extensions["temli_storage_lock"] = lock
     app.extensions["temli_backup_root"] = backups
     app.extensions["temli_backup_retention"] = backup_retention
+    app.extensions["temli_backup_encrypted"] = backup_encryption_key is not None
+    # Backup archives are immutable after atomic creation. Cache the last
+    # verified signature so frequent readiness probes do not reread the ZIP.
+    backup_verification_cache = {"signature": None}
+    restore_challenges = {}
+    restore_challenge_lock = threading.Lock()
+
+    def required_scope():
+        endpoint = request.endpoint or ""
+        if endpoint in {"backup_restore_challenge", "backup_restore"}:
+            return "admin"
+        if endpoint in {"backup_list", "backup_download"}:
+            return "backup_read"
+        return "app"
 
     @app.before_request
     def authenticate():
         if request.path == "/health":
             return None
         supplied = request.headers.get("Authorization", "")
-        expected = "Bearer " + token
+        expected = "Bearer " + {
+            "app": app_token,
+            "backup_read": backup_read_token,
+            "admin": admin_token,
+        }[required_scope()]
         if not hmac.compare_digest(supplied, expected):
             return jsonify(status="error", code="unauthorized"), 401
         if request.method in {"POST", "PUT", "PATCH"} and not request.is_json:
@@ -492,7 +651,58 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     def health():
         return jsonify(status="ok", service="temli-storage", schema=1,
                        capabilities=['json', 'json-batch-v1', 'files-v1',
-                                     'payment-tx-v1', 'backup-v2'])
+                                     'payment-tx-v1', 'backup-v2',
+                                     'authenticated-status-v1',
+                                     'backup-integrity-status-v1',
+                                     'backup-encryption-v1',
+                                     'scoped-auth-v1',
+                                     'restore-challenge-v1'])
+
+    @app.post("/v1/status")
+    def authenticated_status():
+        with lock:
+            try:
+                validate_root(root)
+                archives = sorted(
+                    (path for path in backups.glob("temli-*.zip")
+                     if BACKUP_NAME_RE.fullmatch(path.name)),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                latest = archives[0] if archives else None
+                latest_age = None
+                latest_verified = False
+            except (OSError, StorageServiceError):
+                return jsonify(status="error", code="storage_not_ready"), 503
+            if latest is not None:
+                try:
+                    latest_stat = latest.stat()
+                    latest_age = max(0, int(
+                        datetime.now(timezone.utc).timestamp() - latest_stat.st_mtime
+                    ))
+                    signature = (
+                        str(latest), latest_stat.st_dev, latest_stat.st_ino,
+                        latest_stat.st_size, latest_stat.st_mtime_ns,
+                    )
+                    if backup_verification_cache["signature"] != signature:
+                        inspect_backup(
+                            latest, encryption_key=backup_encryption_key,
+                            allow_plaintext=allow_plaintext_backups)
+                        backup_verification_cache["signature"] = signature
+                    latest_verified = True
+                except (OSError, StorageServiceError):
+                    return jsonify(
+                        status="error", code="backup_verification_failed",
+                    ), 503
+        return jsonify(
+            status="ok",
+            service="temli-storage",
+            backup={
+                "count": len(archives),
+                "latest_age_seconds": latest_age,
+                "latest_verified": latest_verified,
+            },
+        )
 
     @app.post('/v1/files/read')
     def file_read():
@@ -759,7 +969,9 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     @app.get("/v1/backups")
     def backup_list():
         with lock:
-            return jsonify(status="ok", backups=list_backups(backups))
+            return jsonify(status="ok", backups=list_backups(
+                backups, encryption_key=backup_encryption_key,
+                allow_plaintext=allow_plaintext_backups))
 
     @app.post("/v1/backups")
     def backup_create():
@@ -767,6 +979,7 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
             try:
                 path, manifest = create_backup(
                     root, backups, reason="manual", retention=backup_retention,
+                    encryption_key=backup_encryption_key,
                 )
             except StorageServiceError as error:
                 return jsonify(status="error", code=str(error)), 503
@@ -782,7 +995,9 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     def backup_download(name):
         try:
             path = _backup_path(backups, name)
-            inspect_backup(path)
+            inspect_backup(
+                path, encryption_key=backup_encryption_key,
+                allow_plaintext=allow_plaintext_backups)
         except StorageServiceError as error:
             status = 404 if str(error) == "backup_not_found" else 400
             return jsonify(status="error", code=str(error)), status
@@ -797,18 +1012,22 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
     @app.post("/v1/backups/<name>/restore")
     def backup_restore(name):
         body = request.get_json(silent=True) or {}
-        expected_confirmation = "RESTORE " + name
-        if body.get("apply") is not True or body.get("confirmation") != expected_confirmation:
+        nonce = str(body.get("nonce", ""))
+        with restore_challenge_lock:
+            challenge = restore_challenges.pop(nonce, None)
+        if (body.get("apply") is not True or challenge is None
+                or challenge["name"] != name or challenge["expires"] < time.monotonic()):
             return jsonify(
                 status="error",
                 code="restore_confirmation_required",
-                confirmation=expected_confirmation,
             ), 409
         with lock:
             try:
                 path = _backup_path(backups, name)
                 manifest, safety = restore_backup(
                     root, path, backups, retention=backup_retention,
+                    encryption_key=backup_encryption_key,
+                    allow_plaintext=allow_plaintext_backups,
                 )
             except StorageServiceError as error:
                 status = 404 if str(error) == "backup_not_found" else 400
@@ -820,6 +1039,25 @@ def create_app(root, token, *, initialize=False, backups=None, backup_retention=
                 safety_backup=safety.name,
             )
 
+    @app.post("/v1/backups/<name>/restore-challenge")
+    def backup_restore_challenge(name):
+        try:
+            path = _backup_path(backups, name)
+            inspect_backup(
+                path, encryption_key=backup_encryption_key,
+                allow_plaintext=allow_plaintext_backups)
+        except StorageServiceError as error:
+            status = 404 if str(error) == "backup_not_found" else 400
+            return jsonify(status="error", code=str(error)), status
+        now = time.monotonic()
+        with restore_challenge_lock:
+            for old_nonce, value in list(restore_challenges.items()):
+                if value["expires"] < now:
+                    restore_challenges.pop(old_nonce, None)
+            nonce = secrets.token_urlsafe(32)
+            restore_challenges[nonce] = {"name": name, "expires": now + 300}
+        return jsonify(status="ok", nonce=nonce, expires_in_seconds=300)
+
     return app
 
 
@@ -827,30 +1065,47 @@ def main():
     from waitress import create_server
 
     root = storage_root()
-    token = os.getenv("TEMLI_STORAGE_TOKEN", "")
+    tokens = configured_storage_tokens()
     initialize = os.getenv("TEMLI_STORAGE_INITIALIZE_EMPTY", "false").lower() == "true"
     backups = backup_root(root)
     retention = int(os.getenv("TEMLI_BACKUP_RETENTION", "30"))
     interval = int(os.getenv("TEMLI_BACKUP_INTERVAL_SECONDS", "21600"))
+    backup_encryption_key, allow_plaintext_backups = backup_encryption_settings()
+    migrate_plaintext = str(
+        os.getenv("TEMLI_MIGRATE_PLAINTEXT_BACKUPS", "false") or "false"
+    ).strip().lower()
+    if migrate_plaintext not in {"true", "false"}:
+        raise StorageServiceError(
+            "TEMLI_MIGRATE_PLAINTEXT_BACKUPS must be true or false")
     if retention < 1 or retention > 1000:
         raise StorageServiceError("TEMLI_BACKUP_RETENTION must be between 1 and 1000")
     if interval != 0 and interval < 300:
         raise StorageServiceError("TEMLI_BACKUP_INTERVAL_SECONDS must be 0 or at least 300")
+    if migrate_plaintext == "true":
+        migrated = migrate_plaintext_backups(backups, backup_encryption_key)
+        print("TEMLI plaintext backups encrypted: " + str(migrated), flush=True)
     app = create_app(
         root,
-        token,
+        app_token=tokens["app"],
+        backup_read_token=tokens["backup_read"],
+        admin_token=tokens["admin"],
         initialize=initialize,
         backups=backups,
         backup_retention=retention,
+        backup_encryption_key=backup_encryption_key,
+        allow_plaintext_backups=allow_plaintext_backups,
     )
     lock = app.extensions["temli_storage_lock"]
     stop = None
     worker = None
     if interval:
         with lock:
-            create_backup(root, backups, reason="startup", retention=retention)
+            create_backup(
+                root, backups, reason="startup", retention=retention,
+                encryption_key=backup_encryption_key)
         stop, worker = start_backup_worker(
             root, backups, lock, interval=interval, retention=retention,
+            encryption_key=backup_encryption_key,
         )
     server = create_server(
         app,

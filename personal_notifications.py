@@ -19,10 +19,63 @@ def send_scheduled_notifications(host, now, kinds=('reminder', 'end')):
     # Each teacher is isolated; delivery uses the recipient's original channel.
     for teacher in host.registered_teacher_ids(include_legacy=True):
         try:
+            if 'reminder' in kinds:
+                _send_teacher_block_reminder(host, str(teacher), now)
             _send_teacher_notifications(host, str(teacher), now, kinds)
         except Exception:
             # Provider exceptions and credentials must not enter logs.
             continue
+
+
+def _send_teacher_block_reminder(host, teacher, now):
+    """Notify the teacher once per work block, never once per consecutive lesson."""
+    with host.teacher_scope(teacher), host.DATA_LOCK:
+        settings = host.load_settings()
+        if settings.get('teacher_block_reminders') is not True or not str(host.TOKEN or ''):
+            return
+        lessons = []
+        for lesson in host.load_json(host.DATA_FILE).get(now.strftime('%Y-%m-%d'), []):
+            if host.is_personal_event(lesson) or lesson.get('cancelled'):
+                continue
+            try:
+                start = datetime.datetime.strptime(now.strftime('%Y-%m-%d') + ' ' + lesson['time'], '%Y-%m-%d %H:%M')
+                start = now.tzinfo.localize(start) if hasattr(now.tzinfo, 'localize') else start.replace(tzinfo=now.tzinfo)
+                end = start + datetime.timedelta(minutes=int(lesson.get('duration', 60)))
+            except (ValueError, TypeError, KeyError):
+                continue
+            lessons.append((start, end, lesson))
+        lessons.sort(key=lambda item: item[0])
+        gap = datetime.timedelta(minutes=int(settings.get('teacher_block_gap_minutes', 60)))
+        lead = datetime.timedelta(minutes=int(settings.get('teacher_block_reminder_minutes', 30)))
+        previous_end = None
+        selected = None
+        for start, end, lesson in lessons:
+            starts_block = previous_end is None or start - previous_end > gap
+            if starts_block and 0 <= (now - (start - lead)).total_seconds() < 300:
+                selected = (start, lesson)
+                break
+            previous_end = max(previous_end, end) if previous_end else end
+        if not selected:
+            return
+        start, lesson = selected
+        path = os.path.join(host.tenant_root(), 'personal_notification_log.json')
+        log = host._load_json_raw(path, {})
+        key = 'teacher-block-' + hashlib.sha256(
+            f"{teacher}:{start.isoformat()}:{lesson.get('id')}".encode()).hexdigest()
+        if key in log:
+            return
+        log[key] = 'unknown'
+        host._save_json_raw(path, log)
+        title = str(lesson.get('group_name') or lesson.get('student') or 'занятие')
+        text = f"Через 30 минут начинается рабочий блок: {title} · {start.strftime('%H:%M')}."
+    try:
+        bots.telegram_info(host.TOKEN, 'sendMessage', {'chat_id': int(teacher), 'text': text})
+    except (bots.ConnectionError, TypeError, ValueError):
+        return
+    with host.teacher_scope(teacher), host.DATA_LOCK:
+        log = host._load_json_raw(path, {})
+        log[key] = 'sent'
+        host._save_json_raw(path, log)
 
 
 def send_lesson_end_notifications(host, now):
@@ -67,6 +120,8 @@ def _send_teacher_notifications(host, teacher, now, kinds):
                         sid = str(member.get('student_id', ''))
                         info = host.get_student_record(students, sid)
                         for kind in kinds:
+                            if kind == 'reminder' and lesson.get('reminder_enabled') is False:
+                                continue
                             enabled = info.get('parent_lesson_end' if kind == 'end' else 'student_reminders') is True
                             due = end if kind == 'end' else reminder
                             if not enabled or not 0 <= (now - due).total_seconds() < 300:

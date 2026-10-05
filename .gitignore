@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.release-venv/
+.venv-storage-check/
+dist/
+deploy/selectel/.env
+deploy/selectel/*.env
+!deploy/selectel/.env.example
